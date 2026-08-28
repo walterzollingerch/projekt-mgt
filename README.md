@@ -32,10 +32,12 @@ src/ui/       Oberfläche (React) inkl. eigener Grundbausteine.
 **1. Abhängigkeit** in der `package.json` der App:
 
 ```json
-"@tomtalent/projekt-mgt": "github:walterzollingerch/projekt-mgt#v1.0.0"
+"@tomtalent/projekt-mgt": "https://github.com/walterzollingerch/projekt-mgt/archive/refs/tags/v1.0.0.tar.gz"
 ```
 
 Immer auf einen **Tag** zeigen, nie auf `main` — sonst ändert sich das Verhalten der App beim nächsten Vercel-Build, ohne dass jemand etwas getan hat.
+
+**Nicht** die Kurzform `github:walterzollingerch/projekt-mgt#v1.0.0` benutzen. npm schreibt die in der Lock-Datei auf `git+ssh://git@github.com/…` um — auch wenn man ausdrücklich `git+https://` hinschreibt. Im Vercel-Build gibt es keine SSH-Schlüssel, und er scheitert dann beim Installieren. Das Tarball-Archiv ist reines HTTPS und braucht im Build kein Git.
 
 **2. Transpilieren.** Das Paket liefert TypeScript-Quellen aus, keinen Build. In `next.config.ts`:
 
