@@ -105,6 +105,9 @@ interface ProjektClientProps {
   moveProjekte: MoveProjekt[]
   isManager: boolean
   userId: string
+  /** Unter welchem Pfad die Modul-Seiten in dieser App hängen
+   *  (Portal `/aufgaben`, Terramay `/dashboard/projekte`). */
+  basisPfad?: string
 }
 
 const emptyTaskForm = { titel: '', beschreibung: '', assignee_id: '', due_date: '', wiederholung: '', folder_id: '', tag_ids: [] as string[] }
@@ -143,7 +146,7 @@ function istUeberfaellig(task: TaskRow): boolean {
   return new Date(`${task.due_date}T00:00:00`) < heute
 }
 
-export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId }: ProjektClientProps) {
+export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben' }: ProjektClientProps) {
   const supabase = createClient()
   const [project, setProject] = useState(initialProject)
   const [members, setMembers] = useState(initialProject.members)
@@ -417,7 +420,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       setTasks(prev => prev.filter(t => t.id !== taskId && t.parent_task_id !== taskId))
       setMoveHinweis({
         text: `Aufgabe wurde ins Projekt «${zielProjekt.name}» verschoben.`,
-        href: `/aufgaben/${zielProjekt.id}?task=${taskId}`,
+        href: `${basisPfad}/${zielProjekt.id}?task=${taskId}`,
       })
     }
     setDetailTask(null)
@@ -888,7 +891,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 sm:py-8">
-      <Link href="/aufgaben" className="inline-flex items-center gap-1 py-1 text-sm text-[#1a5276] hover:underline mb-4">
+      <Link href={basisPfad} className="inline-flex items-center gap-1 py-1 text-sm text-[#1a5276] hover:underline mb-4">
         <ArrowLeft size={15} /> Alle Projekte
       </Link>
 

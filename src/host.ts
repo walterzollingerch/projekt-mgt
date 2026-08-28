@@ -16,6 +16,18 @@ export interface ProjektMgtHost {
   /** Basis-Adresse für Links in Benachrichtigungen, OHNE Schrägstrich am Ende */
   appUrl: string
 
+  /**
+   * Unter welchem Pfad die Oberfläche des Moduls in dieser App
+   * hängt, OHNE Schrägstrich am Ende — z.B. `/aufgaben` im Portal,
+   * `/dashboard/projekte` in Terramay. Daraus baut das Modul die
+   * Deep-Links in seinen Benachrichtigungen.
+   *
+   * Die Oberfläche selbst bekommt denselben Wert als Prop von der
+   * Seite: Client-Komponenten laufen im Browser, wo diese
+   * serverseitige Konfiguration nicht existiert.
+   */
+  basisPfad: string
+
   marke: {
     /** Kopfzeile der Mail, z.B. «TOM TALENT — Projekt-Mgt» */
     titel: string

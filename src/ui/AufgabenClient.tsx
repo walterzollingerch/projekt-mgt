@@ -66,6 +66,9 @@ interface AufgabenClientProps {
   profiles: ProfileOption[]
   isManager: boolean
   userId: string
+  /** Unter welchem Pfad die Modul-Seiten in dieser App hängen
+   *  (Portal `/aufgaben`, Terramay `/dashboard/projekte`). */
+  basisPfad?: string
 }
 
 const emptyProjektForm = { name: '', company_id: '', beschreibung: '', member_ids: [] as string[] }
@@ -102,7 +105,7 @@ function sucheEscapen(q: string): string {
   return q.replace(/[,()"\\%_]/g, ' ').trim()
 }
 
-export default function AufgabenClient({ initialProjects, initialOffeneTasks, folders, tags, companies, profiles, isManager, userId }: AufgabenClientProps) {
+export default function AufgabenClient({ initialProjects, initialOffeneTasks, folders, tags, companies, profiles, isManager, userId, basisPfad = '/aufgaben' }: AufgabenClientProps) {
   const supabase = createClient()
   const [projects, setProjects] = useState(initialProjects)
   const [offeneTasks, setOffeneTasks] = useState(initialOffeneTasks)
@@ -394,7 +397,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     return (
       <Link
         key={task.id}
-        href={`/aufgaben/${task.project_id}?task=${task.id}`}
+        href={`${basisPfad}/${task.project_id}?task=${task.id}`}
         className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 hover:border-[#1a5276] transition-colors flex items-start sm:items-center justify-between gap-3"
       >
         <div className="min-w-0 flex-1">
@@ -508,7 +511,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
                   return (
                     <Link
                       key={project.id}
-                      href={`/aufgaben/${project.id}`}
+                      href={`${basisPfad}/${project.id}`}
                       className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 hover:border-[#1a5276] transition-colors flex items-center justify-between gap-3"
                     >
                       <div className="min-w-0">

@@ -1,5 +1,6 @@
 import type { Db, Result } from '../typen'
 import { istTagFarbe, type TagFarbe } from './tags'
+import { hostLesen } from '../host'
 import {
   sendTaskAssignedMail,
   sendTaskUnassignedMail,
@@ -161,7 +162,7 @@ export async function createProject(supabase: Db, userId: string, input: CreateP
           projektName: project.name,
           geaendertVon: akteur.name,
           antwortAn: akteur.email,
-          projektPath: `/aufgaben/${project.id}`,
+          projektPath: `${hostLesen().basisPfad}/${project.id}`,
         })
       ))
     }
@@ -254,7 +255,7 @@ export async function addProjectMember(supabase: Db, userId: string, projectId: 
       projektName: project?.name ?? '',
       geaendertVon: akteur.name,
       antwortAn: akteur.email,
-      projektPath: `/aufgaben/${projectId}`,
+      projektPath: `${hostLesen().basisPfad}/${projectId}`,
     })
   }
 
@@ -673,7 +674,7 @@ export async function createTask(supabase: Db, userId: string, input: CreateTask
       dueDate: task.due_date,
       zugewiesenVon: akteur.name,
       antwortAn: akteur.email,
-      taskPath: `/aufgaben/${task.project_id}?task=${task.id}`,
+      taskPath: `${hostLesen().basisPfad}/${task.project_id}?task=${task.id}`,
     })
   }
 
@@ -885,7 +886,7 @@ export async function updateTask(supabase: Db, userId: string, id: string, input
     task.tags = await ladeTaskTags(supabase, id)
   }
 
-  const taskPath = `/aufgaben/${task.project_id}?task=${task.id}`
+  const taskPath = `${hostLesen().basisPfad}/${task.project_id}?task=${task.id}`
   const projektName = task.project?.name ?? ''
   const assigneeChanged = 'assignee_id' in payload && payload.assignee_id !== current.assignee_id
 
@@ -976,7 +977,7 @@ export async function updateTask(supabase: Db, userId: string, id: string, input
         dueDate: folgeTask.due_date,
         zugewiesenVon: akteur.name,
         antwortAn: akteur.email,
-        taskPath: `/aufgaben/${folgeTask.project_id}?task=${folgeTask.id}`,
+        taskPath: `${hostLesen().basisPfad}/${folgeTask.project_id}?task=${folgeTask.id}`,
       })
     }
   }
@@ -1150,7 +1151,7 @@ export async function addTaskNote(supabase: Db, userId: string, id: string, inpu
         notizText: note.text,
         autor: akteur.name,
         antwortAn: akteur.email,
-        taskPath: `/aufgaben/${task.project_id}?task=${task.id}`,
+        taskPath: `${hostLesen().basisPfad}/${task.project_id}?task=${task.id}`,
         attachments,
       })
     ))
