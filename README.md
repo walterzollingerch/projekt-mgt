@@ -66,9 +66,11 @@ projektMgtKonfigurieren({
 
 **4. Datenbank.** In dieser Reihenfolge:
 
-1. `sql/host/<app>_voraussetzungen.sql`, Abschnitte A und B
+1. `sql/host/<app>_01_voraussetzungen.sql`
 2. `sql/modul/01` bis `08` der Reihe nach
-3. `sql/host/<app>_voraussetzungen.sql`, Abschnitt C — er benutzt Funktionen aus `modul/01` und kann erst danach laufen
+3. `sql/host/<app>_02_profilzugriff.sql`
+
+Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` und `shares_project_with()` aus `modul/01` benutzt. Stünde er in derselben Datei wie Schritt 1, würde ein Ausführen am Stück mit «function does not exist» abbrechen — eine Datei, die man nur teilweise ausführen darf, ist eine Falle.
 
 Die Gastgeber-App muss mitbringen: `profiles` (mit `role`, `is_blocked`, `can_use_projects`, `can_manage_projects`), `companies` (`id`, `name`) und die View `mitarbeiter_verzeichnis` (`id, full_name, email, company_id, is_blocked, darf_projekte_nutzen`). Den Storage-Bucket `task-attachments` legt `sql/modul/02` an.
 

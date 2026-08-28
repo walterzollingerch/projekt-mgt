@@ -1,5 +1,5 @@
 -- ============================================================
--- HOST-VORAUSSETZUNGEN — Terramay (Projekt bnahtgsfsvkruwydwluj)
+-- HOST-VORAUSSETZUNGEN 1/2 — Terramay (bnahtgsfsvkruwydwluj)
 --
 -- Was die Gastgeber-App bereitstellen muss, damit das Modul
 -- `projekt-mgt` laufen kann. Diese Datei gehört Terramay, nicht dem
@@ -7,9 +7,10 @@
 -- und die sind andere als im Portal.
 --
 -- REIHENFOLGE
---   1. ABSCHNITT A und B hier
---   2. sql/modul/01, 03, 04, 05, 06, 07, 08 in dieser Reihenfolge
---   3. ABSCHNITT C hier (braucht Modulfunktionen aus 01)
+--   1. DIESE Datei
+--   2. sql/modul/01 bis 08 der Reihe nach
+--   3. terramay_02_profilzugriff.sql — die braucht Funktionen, die
+--      erst in modul/01 entstehen, und muss deshalb zuletzt laufen
 --
 -- Mehrfaches Ausführen ist ungefährlich.
 -- ============================================================
@@ -116,45 +117,3 @@ GRANT SELECT ON public.mitarbeiter_verzeichnis TO authenticated, service_role;
 COMMENT ON VIEW public.mitarbeiter_verzeichnis IS
   'Kollegenverzeichnis fuer das Projekt-Mgt. Bewusst OHNE Rechte-Matrix — '
   'nur Name, E-Mail und die Modul-Zugehoerigkeit.';
-
-
--- ════════════════════════════════════════════════════════════
--- ABSCHNITT C — NACH sql/modul/01 ausfuehren
---
--- Profil-Sichtbarkeit fuer das Modul: Projektverwalter sehen alle
--- Profile (Mitglieder-Auswahl), Mitglieder die Profile ihrer
--- Projektkollegen (Zustaendigen-Anzeige). Benutzt die Funktionen
--- aus sql/modul/01 — deshalb erst danach.
--- ════════════════════════════════════════════════════════════
-
-DROP POLICY IF EXISTS "profiles_select_projectmgr" ON public.profiles;
-CREATE POLICY "profiles_select_projectmgr" ON public.profiles
-  FOR SELECT USING (public.is_project_manager());
-
-DROP POLICY IF EXISTS "profiles_select_shared_project" ON public.profiles;
-CREATE POLICY "profiles_select_shared_project" ON public.profiles
-  FOR SELECT USING (public.shares_project_with(id));
-
-
--- Den Speicher-Bucket `task-attachments` samt seinen Policies legt
--- sql/modul/02_notiz_anhang_watcher.sql an — er gehoert dem Modul,
--- nicht der App.
-
-
--- ════════════════════════════════════════════════════════════
--- KONTROLLE (nach ALLEN Schritten ausfuehren)
--- ════════════════════════════════════════════════════════════
-
-SELECT
-  (SELECT count(*) FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='profiles'
-      AND column_name IN ('can_use_projects','can_manage_projects'))          AS rechte_spalten,   -- erwartet 2
-  (SELECT count(*) FROM pg_trigger
-    WHERE tgrelid='public.profiles'::regclass AND tgname='protect_profile_privileges') AS schutz_trigger, -- erwartet 1
-  (SELECT count(*) FROM information_schema.views
-    WHERE table_schema='public' AND table_name='mitarbeiter_verzeichnis')     AS verzeichnis,      -- erwartet 1
-  (SELECT count(*) FROM storage.buckets WHERE id='task-attachments')          AS speicher,         -- erwartet 1
-  (SELECT count(*) FROM information_schema.tables
-    WHERE table_schema='public' AND table_name IN
-      ('projects','project_members','project_folders','tasks','task_notes',
-       'task_watchers','task_tags','task_tag_zuordnungen'))                   AS modul_tabellen;   -- erwartet 8
