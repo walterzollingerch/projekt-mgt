@@ -1,6 +1,6 @@
 {
   "name": "@tomtalent/projekt-mgt",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": false,
   "description": "Projekt-Mgt — Projekte, Aufgaben, Ordner, Tags, Notizen und MCP-Zugang. Geteilt zwischen TT Portal und Terramay.",
   "type": "module",
@@ -10,7 +10,9 @@
     ".": "./src/index.ts",
     "./ui": "./src/ui/index.ts",
     "./mcp": "./src/mcp/index.ts",
-    "./sql/*": "./sql/*"
+    "./sql/*": "./sql/*",
+    "./routes/*": "./src/routes/*.ts",
+    "./server": "./src/server/supabaseServer.ts"
   },
   "files": [
     "src",
