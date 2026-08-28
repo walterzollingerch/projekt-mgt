@@ -20,6 +20,36 @@
 --
 -- Vor diesem Script laufen lassen.
 
+-- 2b. `updated_at` automatisch nachführen.
+--
+-- Diese Funktion ist keine Erfindung des Moduls — im TT Portal gibt
+-- es sie längst und viele Tabellen hängen daran. Terramay kannte sie
+-- nicht, und weil die Trigger weiter unten sie aufrufen, brach die
+-- Migration dort mit «function public.handle_updated_at() does not
+-- exist» ab.
+--
+-- Deshalb: nur anlegen, wenn sie fehlt. Ein CREATE OR REPLACE würde
+-- in einer App, die schon eine (womöglich anders gebaute) Fassung
+-- hat, deren Verhalten für ALLE ihre Tabellen ändern.
+DO $anlegen$
+BEGIN
+  IF to_regprocedure('public.handle_updated_at()') IS NULL THEN
+    EXECUTE $fn$
+      CREATE FUNCTION public.handle_updated_at()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      SET search_path TO 'public', 'extensions', 'pg_temp'
+      AS $body$
+      BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+      END;
+      $body$;
+    $fn$;
+  END IF;
+END
+$anlegen$;
+
 -- 3. Hilfsfunktion für die RLS (weitere Hilfsfunktionen folgen in
 --    Abschnitt 7b — sie referenzieren die neuen Tabellen und können
 --    erst nach deren Anlage erstellt werden)
