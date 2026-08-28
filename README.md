@@ -13,8 +13,11 @@ Wer den Code in `node_modules/@tomtalent/projekt-mgt` bearbeitet, verliert die �
 ## Aufbau
 
 ```
-sql/          Migrationen in Reihenfolge (01…08). Jede App spielt sie in
-              ihre eigene Datenbank ein.
+sql/modul/    Migrationen des Moduls in Reihenfolge (01…08). In jeder App
+              identisch — hier stehen die Tabellen, Trigger und Policies,
+              die dem Projekt-Mgt gehören.
+sql/host/     Was die Gastgeber-App bereitstellen muss. Pro App eine
+              Fassung, weil sie deren profiles-Spalten aufzählt.
 src/typen.ts  Das Schema, das dieses Modul besitzt — plus profiles,
               companies und die View mitarbeiter_verzeichnis, die es von
               der Gastgeber-App erwartet.
@@ -61,11 +64,15 @@ projektMgtKonfigurieren({
 })
 ```
 
-**4. Datenbank.** Die Migrationen aus `sql/` einspielen, dazu die Voraussetzungen der Gastgeber-App:
+**4. Datenbank.** In dieser Reihenfolge:
 
-- Tabellen `profiles` (mit `role`, `is_blocked`, `company_id`, `can_use_projects`, `can_manage_projects`) und `companies` (`id`, `name`)
-- View `mitarbeiter_verzeichnis` mit den Spalten `id, full_name, email, company_id, is_blocked, darf_projekte_nutzen`
-- Privater Storage-Bucket `task-attachments`
+1. `sql/host/<app>_voraussetzungen.sql`, Abschnitte A und B
+2. `sql/modul/01` bis `08` der Reihe nach
+3. `sql/host/<app>_voraussetzungen.sql`, Abschnitt C — er benutzt Funktionen aus `modul/01` und kann erst danach laufen
+
+Die Gastgeber-App muss mitbringen: `profiles` (mit `role`, `is_blocked`, `can_use_projects`, `can_manage_projects`), `companies` (`id`, `name`) und die View `mitarbeiter_verzeichnis` (`id, full_name, email, company_id, is_blocked, darf_projekte_nutzen`). Den Storage-Bucket `task-attachments` legt `sql/modul/02` an.
+
+**Warum die Trennung:** Der Privilegien-Schutz-Trigger auf `profiles` zählt *alle* Rechte-Spalten der jeweiligen App auf — im Portal sind das zwölf, in Terramay sieben. Eine gemeinsame Fassung wäre in beiden Apps falsch. Dasselbe gilt für die Erweiterung der `profiles`-Policies. Alles andere ist überall gleich.
 
 **5. Client übergeben.** Die App reicht ihren eigenen Supabase-Client an der Grenze herein:
 

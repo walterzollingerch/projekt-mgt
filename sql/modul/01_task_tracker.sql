@@ -10,35 +10,15 @@
 -- (setzt supabase_migration_sommerfest_gaeste.sql voraus)
 -- ============================================================
 
--- 1. Neues Recht auf profiles
-ALTER TABLE public.profiles
-  ADD COLUMN IF NOT EXISTS can_manage_projects BOOLEAN DEFAULT FALSE NOT NULL;
-
--- 2. Privilegien-Schutz-Trigger um das neue Recht erweitern
-CREATE OR REPLACE FUNCTION public.protect_profile_privileges()
-RETURNS TRIGGER AS $$
-BEGIN
-  IF (NEW.role IS DISTINCT FROM OLD.role
-      OR NEW.can_capture_receipts IS DISTINCT FROM OLD.can_capture_receipts
-      OR NEW.can_manage_finances IS DISTINCT FROM OLD.can_manage_finances
-      OR NEW.can_manage_meals IS DISTINCT FROM OLD.can_manage_meals
-      OR NEW.can_manage_users IS DISTINCT FROM OLD.can_manage_users
-      OR NEW.can_manage_references IS DISTINCT FROM OLD.can_manage_references
-      OR NEW.can_review_references IS DISTINCT FROM OLD.can_review_references
-      OR NEW.can_manage_trademarks IS DISTINCT FROM OLD.can_manage_trademarks
-      OR NEW.can_view_factorial_reports IS DISTINCT FROM OLD.can_view_factorial_reports
-      OR NEW.can_view_event_guests IS DISTINCT FROM OLD.can_view_event_guests
-      OR NEW.can_manage_projects IS DISTINCT FROM OLD.can_manage_projects
-      OR NEW.is_blocked IS DISTINCT FROM OLD.is_blocked) THEN
-    IF auth.uid() IS NOT NULL AND NOT EXISTS (
-      SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin'
-    ) THEN
-      RAISE EXCEPTION 'Keine Berechtigung, Rollen oder Rechte zu ändern';
-    END IF;
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+-- 1./2. HOST-ANTEIL — nicht mehr hier.
+--
+-- Die Spalten `can_manage_projects` / `can_use_projects` auf
+-- `profiles` und der Privilegien-Schutz-Trigger gehören der
+-- Gastgeber-App, nicht dem Modul: der Trigger zählt ALLE Rechte-
+-- Spalten der jeweiligen App auf, und die sind überall andere.
+-- Siehe `sql/host/` — dort liegt für jede App ihre Fassung.
+--
+-- Vor diesem Script laufen lassen.
 
 -- 3. Hilfsfunktion für die RLS (weitere Hilfsfunktionen folgen in
 --    Abschnitt 7b — sie referenzieren die neuen Tabellen und können
@@ -218,12 +198,13 @@ CREATE POLICY "task_notes_insert" ON public.task_notes
     AND (public.is_project_manager() OR public.is_member_of_task(task_id))
   );
 
--- 12. Profil-Sichtbarkeit: Projektverwalter sehen alle Profile
--- (Mitglieder-Auswahl); Mitglieder sehen die Profile ihrer
--- Projektkollegen (Zuständigen-Anzeige und -Auswahl)
-DROP POLICY IF EXISTS "profiles_select_projectmgr" ON public.profiles;
-CREATE POLICY "profiles_select_projectmgr" ON public.profiles
-  FOR SELECT USING (public.is_project_manager());
-DROP POLICY IF EXISTS "profiles_select_shared_project" ON public.profiles;
-CREATE POLICY "profiles_select_shared_project" ON public.profiles
-  FOR SELECT USING (public.shares_project_with(id));
+-- 12. HOST-ANTEIL — nicht mehr hier.
+--
+-- Die Profil-Sichtbarkeit (Projektverwalter sehen alle Profile,
+-- Mitglieder die Profile ihrer Projektkollegen) greift in die
+-- `profiles`-Policies der Gastgeber-App ein. Sie benutzt zwar die
+-- Modulfunktionen `is_project_manager()` und `shares_project_with()`,
+-- gehört aber der App — jede hat dort ihre eigenen Policies.
+--
+-- Siehe `sql/host/`. NACH diesem Script laufen lassen, weil die
+-- beiden Funktionen erst hier entstehen.
