@@ -174,8 +174,18 @@ CREATE INDEX IF NOT EXISTS idx_project_members_profile ON public.project_members
 CREATE INDEX IF NOT EXISTS idx_tasks_project_status ON public.tasks(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON public.tasks(assignee_id);
 CREATE INDEX IF NOT EXISTS idx_task_notes_task ON public.task_notes(task_id, created_at);
+-- Trigram-Index für die Freitextsuche über Aufgabentitel.
+--
+-- Braucht die Erweiterung pg_trgm. Supabase legt Erweiterungen ins
+-- Schema `extensions`, das nicht im Standard-search_path steht —
+-- deshalb wird die Operatorklasse unten voll qualifiziert
+-- (`extensions.gin_trgm_ops`). Ohne das scheitert der Index mit
+-- «operator class "gin_trgm_ops" does not exist for access method
+-- "gin"», selbst wenn die Erweiterung installiert ist.
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;
+
 CREATE INDEX IF NOT EXISTS idx_tasks_titel_trgm ON public.tasks
-  USING gin (titel gin_trgm_ops);
+  USING gin (titel extensions.gin_trgm_ops);
 
 -- 11. RLS
 ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;

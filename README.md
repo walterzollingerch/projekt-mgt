@@ -74,6 +74,16 @@ Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` u
 
 Die Gastgeber-App muss mitbringen: `profiles` (mit `role`, `is_blocked`, `can_use_projects`, `can_manage_projects`), `companies` (`id`, `name`) und die View `mitarbeiter_verzeichnis` (`id, full_name, email, company_id, is_blocked, darf_projekte_nutzen`). Den Storage-Bucket `task-attachments` legt `sql/modul/02` an.
 
+**Vor dem Einspielen trocken prüfen.** Die ganze Kette lässt sich gegen die Zieldatenbank durchspielen, ohne etwas zu hinterlassen — das findet alle fehlenden Voraussetzungen auf einmal statt eine pro Anlauf:
+
+```sql
+BEGIN;
+-- host/<app>_01, dann modul/01..08, dann host/<app>_02 aneinandergehängt
+ROLLBACK;
+```
+
+Der Supabase-SQL-Editor fährt ohnehin jedes Skript in einer Transaktion: bricht es ab, ist nichts halb angelegt.
+
 **Warum die Trennung:** Der Privilegien-Schutz-Trigger auf `profiles` zählt *alle* Rechte-Spalten der jeweiligen App auf — im Portal sind das zwölf, in Terramay sieben. Eine gemeinsame Fassung wäre in beiden Apps falsch. Dasselbe gilt für die Erweiterung der `profiles`-Policies. Alles andere ist überall gleich.
 
 **5. Client übergeben.** Die App reicht ihren eigenen Supabase-Client an der Grenze herein:

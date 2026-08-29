@@ -1,6 +1,6 @@
 {
   "name": "@tomtalent/projekt-mgt",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "private": false,
   "description": "Projekt-Mgt — Projekte, Aufgaben, Ordner, Tags, Notizen und MCP-Zugang. Geteilt zwischen TT Portal und Terramay.",
   "type": "module",
