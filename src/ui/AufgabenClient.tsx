@@ -1,15 +1,16 @@
 'use client'
 import Link from 'next/link'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Plus, ClipboardList, Users, ChevronRight, Archive, Search, CalendarClock, MessageSquare, FolderOpen, Folder, Tags, X } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
 import TagChip from './komponenten/TagChip'
+import TagModusSchalter from './komponenten/TagModusSchalter'
 import Input from './komponenten/Input'
 import { createClient } from './supabaseBrowser'
 import { formatDate } from '../hilfen'
-import { tagsVonTask, type TagRow, type TaskTagRef } from '../logik/tags'
+import { TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
 
 interface ProfileOption {
   id: string
@@ -129,6 +130,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
 
   // Tag-Filter (ODER-Verknüpfung, gilt für «Fällig» und «Suche»)
   const [filterTags, setFilterTags] = useState<Set<string>>(new Set())
+  const [tagModus, setTagModus] = useState<TagModus>('oder')
 
   // Suche
   const [suche, setSuche] = useState('')
@@ -174,10 +176,17 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     return [...gruppen.values()].sort((a, b) => a.name.localeCompare(b.name))
   }, [tags, projects, companies])
 
-  const passtZuTagFilter = (task: TaskRow) => {
-    if (filterTags.size === 0) return true
-    return (task.tags ?? []).some(z => z.tag && filterTags.has(z.tag.id))
-  }
+  // Tag-Filter: je nach Modus mindestens einer der gewählten Tags
+  // («oder») oder alle («und»)
+  const passtZuTagFilter = useCallback(
+    (task: TaskRow) => {
+      const eigene = (task.tags ?? [])
+        .map(z => z.tag?.id)
+        .filter((id): id is string => !!id)
+      return passtZuTags(eigene, filterTags, tagModus)
+    },
+    [filterTags, tagModus]
+  )
 
   const toggleFilterTag = (tagId: string) => {
     setFilterTags(prev => {
@@ -205,12 +214,15 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               const aktiv = filterTags.has(t.id)
               return (
                 <button key={t.id} type="button" onClick={() => toggleFilterTag(t.id)} title={aktiv ? 'Filter entfernen' : 'Nach diesem Tag filtern'}>
-                  <TagChip name={t.name} farbe={t.farbe} aktiv={aktiv} className={aktiv ? '' : 'opacity-70 hover:opacity-100'} />
+                  <TagChip name={t.name} farbe={t.farbe} aktiv={aktiv} className={aktiv ? '' : TAG_CHIP_WAEHLBAR} />
                 </button>
               )
             })}
           </div>
         ))}
+        {filterTags.size > 1 && (
+          <TagModusSchalter modus={tagModus} onChange={setTagModus} />
+        )}
         {filterTags.size > 0 && (
           <button
             type="button"
@@ -249,14 +261,14 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     return offeneTasks
       .filter(t => {
         if (nurMeine && t.assignee_id !== userId) return false
-        if (filterTags.size > 0 && !(t.tags ?? []).some(z => z.tag && filterTags.has(z.tag.id))) return false
+        if (!passtZuTagFilter(t)) return false
         if (faelligFilter === 'ueberfaellig') return t.due_date < heute
         if (faelligFilter === 'heute') return t.due_date <= heute
         if (faelligFilter === 'woche') return t.due_date <= inTagenISO(7)
         return true
       })
       .sort((a, b) => a.due_date.localeCompare(b.due_date))
-  }, [offeneTasks, faelligFilter, nurMeine, userId, filterTags])
+  }, [offeneTasks, faelligFilter, nurMeine, userId, passtZuTagFilter])
 
   const gefilterteTreffer = treffer.filter(passtZuTagFilter)
 
@@ -727,7 +739,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
                         tag_ids: f.tag_ids.includes(t.id) ? f.tag_ids.filter(id => id !== t.id) : [...f.tag_ids, t.id],
                       }))}
                     >
-                      <TagChip name={t.name} farbe={t.farbe} aktiv={gewaehlt} size="sm" className={gewaehlt ? '' : 'opacity-70 hover:opacity-100'} />
+                      <TagChip name={t.name} farbe={t.farbe} aktiv={gewaehlt} size="sm" className={gewaehlt ? '' : TAG_CHIP_WAEHLBAR} />
                     </button>
                   )
                 })}

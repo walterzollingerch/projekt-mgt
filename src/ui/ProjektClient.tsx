@@ -10,7 +10,8 @@ import TextMitLinks from './komponenten/TextMitLinks'
 import Input from './komponenten/Input'
 import { createClient } from './supabaseBrowser'
 import { formatDate } from '../hilfen'
-import { TAG_FARBEN, TAG_FARB_LABELS, tagsVonTask, type TagFarbe, type TagRow, type TaskTagRef } from '../logik/tags'
+import TagModusSchalter from './komponenten/TagModusSchalter'
+import { TAG_FARBEN, TAG_FARB_LABELS, TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagFarbe, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
 
 interface ProfileOption {
   id: string
@@ -190,6 +191,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const [editTagFarbe, setEditTagFarbe] = useState<TagFarbe>('grau')
   // Gewählte Filter-Tags (ODER-Verknüpfung)
   const [filterTags, setFilterTags] = useState<Set<string>>(new Set())
+  const [tagModus, setTagModus] = useState<TagModus>('oder')
 
   // Task-Detail
   const [detailTask, setDetailTask] = useState<TaskRow | null>(null)
@@ -275,13 +277,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   // Offene Tasks nach Ordner gruppiert; Aufgaben ohne Ordner stehen
   // als letzte Gruppe. Ordner ohne offene Aufgaben bleiben sichtbar —
   // sonst liesse sich dort nichts mehr einsortieren.
-  // Tag-Filter (ODER): eine Aufgabe passt, wenn sie mindestens einen
-  // der gewählten Tags trägt. Mutter-Tasks passender Unter-Tasks
+  // Tag-Filter: je nach Modus mindestens einer der gewählten Tags
+  // («oder») oder alle («und»). Mutter-Tasks passender Unter-Tasks
   // bleiben als Kontext sichtbar.
-  const passtZuTagFilter = useCallback((task: TaskRow) => {
-    if (filterTags.size === 0) return true
-    return tagIdsVon(task).some(id => filterTags.has(id))
-  }, [filterTags])
+  const passtZuTagFilter = useCallback(
+    (task: TaskRow) => passtZuTags(tagIdsVon(task), filterTags, tagModus),
+    [filterTags, tagModus]
+  )
 
   const nachTagFilter = useCallback((liste: TaskRow[]) => {
     if (filterTags.size === 0) return liste
@@ -972,8 +974,9 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         </button>
       </div>
 
-      {/* Tag-Filter — gewählte Tags sind ODER-verknüpft; passt ein
-          Unter-Task, bleibt sein Mutter-Task als Kontext sichtbar */}
+      {/* Tag-Filter — ab zwei gewählten Tags ist die Verknüpfung
+          umschaltbar; passt ein Unter-Task, bleibt sein Mutter-Task
+          als Kontext sichtbar */}
       {tags.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
           <span className="inline-flex items-center gap-1 text-xs text-gray-500 mr-0.5">
@@ -987,11 +990,14 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   name={t.name}
                   farbe={t.farbe}
                   aktiv={aktiv}
-                  className={aktiv ? '' : 'opacity-70 hover:opacity-100'}
+                  className={aktiv ? '' : TAG_CHIP_WAEHLBAR}
                 />
               </button>
             )
           })}
+          {filterTags.size > 1 && (
+            <TagModusSchalter modus={tagModus} onChange={setTagModus} />
+          )}
           {filterTags.size > 0 && (
             <button
               type="button"
@@ -1202,7 +1208,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   const gewaehlt = taskForm.tag_ids.includes(t.id)
                   return (
                     <button key={t.id} type="button" onClick={() => toggleFormTag(t.id, 'neu')}>
-                      <TagChip name={t.name} farbe={t.farbe} aktiv={gewaehlt} size="sm" className={gewaehlt ? '' : 'opacity-70 hover:opacity-100'} />
+                      <TagChip name={t.name} farbe={t.farbe} aktiv={gewaehlt} size="sm" className={gewaehlt ? '' : TAG_CHIP_WAEHLBAR} />
                     </button>
                   )
                 })}
@@ -1358,7 +1364,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                             onClick={() => toggleFormTag(t.id, 'detail')}
                             className={detailFirmenwechsel ? 'cursor-not-allowed opacity-40' : ''}
                           >
-                            <TagChip name={t.name} farbe={t.farbe} aktiv={gewaehlt} size="sm" className={gewaehlt ? '' : 'opacity-70 hover:opacity-100'} />
+                            <TagChip name={t.name} farbe={t.farbe} aktiv={gewaehlt} size="sm" className={gewaehlt ? '' : TAG_CHIP_WAEHLBAR} />
                           </button>
                         )
                       })}
@@ -1771,7 +1777,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                           name={TAG_FARB_LABELS[f]}
                           farbe={f}
                           aktiv={editTagFarbe === f}
-                          className={editTagFarbe === f ? '' : 'opacity-70 hover:opacity-100'}
+                          className={editTagFarbe === f ? '' : TAG_CHIP_WAEHLBAR}
                         />
                       </button>
                     ))}
@@ -1856,7 +1862,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   name={TAG_FARB_LABELS[f]}
                   farbe={f}
                   aktiv={neuerTagFarbe === f}
-                  className={neuerTagFarbe === f ? '' : 'opacity-70 hover:opacity-100'}
+                  className={neuerTagFarbe === f ? '' : TAG_CHIP_WAEHLBAR}
                 />
               </button>
             ))}

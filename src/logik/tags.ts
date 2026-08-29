@@ -21,17 +21,23 @@ export const TAG_FARB_LABELS: Record<TagFarbe, string> = {
   tuerkis: 'Türkis',
 }
 
-// Klassen als ganze Strings — Tailwind darf sie nicht zusammensetzen
+// Klassen als ganze Strings — Tailwind darf sie nicht zusammensetzen.
+// Der Rahmen ist bewusst eine Stufe kräftiger als der Hintergrund:
+// abgewählte Filter-Chips sollen klar sichtbar bleiben, nicht blass.
 export const TAG_FARB_KLASSEN: Record<TagFarbe, string> = {
-  grau: 'bg-gray-100 text-gray-700 border-gray-200',
-  blau: 'bg-blue-100 text-blue-800 border-blue-200',
-  gruen: 'bg-green-100 text-green-800 border-green-200',
-  gelb: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-  orange: 'bg-orange-100 text-orange-800 border-orange-200',
-  rot: 'bg-red-100 text-red-800 border-red-200',
-  violett: 'bg-purple-100 text-purple-800 border-purple-200',
-  tuerkis: 'bg-teal-100 text-teal-800 border-teal-200',
+  grau: 'bg-gray-100 text-gray-700 border-gray-300',
+  blau: 'bg-blue-100 text-blue-800 border-blue-300',
+  gruen: 'bg-green-100 text-green-800 border-green-300',
+  gelb: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+  orange: 'bg-orange-100 text-orange-800 border-orange-300',
+  rot: 'bg-red-100 text-red-800 border-red-300',
+  violett: 'bg-purple-100 text-purple-800 border-purple-300',
+  tuerkis: 'bg-teal-100 text-teal-800 border-teal-300',
 }
+
+// Anklickbarer, aber gerade nicht gewählter Chip. Bewusst ohne
+// Transparenz — die machte die Chips auf hellem Grund fast unlesbar.
+export const TAG_CHIP_WAEHLBAR = 'transition-shadow hover:shadow-sm hover:border-gray-400'
 
 // Ausgewählter Filter-Chip: kräftiger, damit die Auswahl auffällt
 export const TAG_FARB_KLASSEN_AKTIV: Record<TagFarbe, string> = {
@@ -65,6 +71,26 @@ export interface TagRow {
 /** Tag-Angabe an einer Aufgabe (aus dem PostgREST-Embed) */
 export interface TaskTagRef {
   tag: { id: string; name: string; farbe: string } | null
+}
+
+/**
+ * Verknüpfung mehrerer gewählter Tag-Filter:
+ * «oder» = mindestens einer der Tags, «und» = alle gewählten Tags.
+ */
+export type TagModus = 'oder' | 'und'
+
+/**
+ * Trifft der Tag-Filter auf eine Aufgabe zu? `eigene` sind die Tag-IDs
+ * der Aufgabe, `gewaehlt` die angeklickten Filter-Tags. Ohne Auswahl
+ * passt jede Aufgabe.
+ */
+export function passtZuTags(eigene: string[], gewaehlt: Set<string>, modus: TagModus): boolean {
+  if (gewaehlt.size === 0) return true
+  if (modus === 'und') {
+    for (const id of gewaehlt) if (!eigene.includes(id)) return false
+    return true
+  }
+  return eigene.some(id => gewaehlt.has(id))
 }
 
 /** Tags einer Aufgabe in der Reihenfolge der Tag-Pflege */
