@@ -11,6 +11,7 @@ import Input from './komponenten/Input'
 import { createClient } from './supabaseBrowser'
 import { formatDate } from '../hilfen'
 import { TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
+import { machT, type Woerterbuch } from './texte'
 
 interface ProfileOption {
   id: string
@@ -67,6 +68,9 @@ interface AufgabenClientProps {
   profiles: ProfileOption[]
   isManager: boolean
   userId: string
+  /** Beschriftungen überschreiben; fehlt ein Eintrag, bleibt der
+   *  deutsche Text stehen. Inhalte werden nie übersetzt. */
+  texte?: Woerterbuch
   /** Unter welchem Pfad die Modul-Seiten in dieser App hängen
    *  (Portal `/aufgaben`, Terramay `/dashboard/projekte`). */
   basisPfad?: string
@@ -78,12 +82,14 @@ const emptyTaskForm = { project_id: '', titel: '', beschreibung: '', assignee_id
 const SUCHE_SELECT = 'id, titel, beschreibung, due_date, status, project_id, assignee_id, parent_task_id, folder_id, assignee:profiles!tasks_assignee_id_fkey(id, full_name), project:projects(id, name), tags:task_tag_zuordnungen(tag:task_tags(id, name, farbe))'
 
 type FaelligFilter = 'ueberfaellig' | 'heute' | 'woche' | 'alle'
-const FAELLIG_LABELS: Record<FaelligFilter, string> = {
-  ueberfaellig: 'Überfällig',
-  heute: 'Bis heute',
-  woche: 'Nächste 7 Tage',
-  alle: 'Alle offenen',
-}
+// Die Schlüssel sind Werte, die Beschriftungen daneben Text —
+// übersetzt wird nur letzterer.
+const faelligLabels = (txt: (d: string) => string): Record<FaelligFilter, string> => ({
+  ueberfaellig: txt('Überfällig'),
+  heute: txt('Bis heute'),
+  woche: txt('Nächste 7 Tage'),
+  alle: txt('Alle offenen'),
+})
 
 function heuteISO(): string {
   const d = new Date()
@@ -106,7 +112,9 @@ function sucheEscapen(q: string): string {
   return q.replace(/[,()"\\%_]/g, ' ').trim()
 }
 
-export default function AufgabenClient({ initialProjects, initialOffeneTasks, folders, tags, companies, profiles, isManager, userId, basisPfad = '/aufgaben' }: AufgabenClientProps) {
+export default function AufgabenClient({ initialProjects, initialOffeneTasks, folders, tags, companies, profiles, isManager, userId, basisPfad = '/aufgaben', texte }: AufgabenClientProps) {
+  const txt = machT(texte)
+  const labels = faelligLabels(txt)
   const supabase = createClient()
   const [projects, setProjects] = useState(initialProjects)
   const [offeneTasks, setOffeneTasks] = useState(initialOffeneTasks)
@@ -169,7 +177,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     for (const p of projects) if (p.company) firmenNamen.set(p.company.id, p.company.name)
     const gruppen = new Map<string, { name: string; tags: TagRow[] }>()
     for (const t of tags) {
-      const eintrag = gruppen.get(t.company_id) ?? { name: firmenNamen.get(t.company_id) ?? 'Firma', tags: [] }
+      const eintrag = gruppen.get(t.company_id) ?? { name: firmenNamen.get(t.company_id) ?? txt('Firma'), tags: [] }
       eintrag.tags.push(t)
       gruppen.set(t.company_id, eintrag)
     }
@@ -213,7 +221,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
             {gruppe.tags.map(t => {
               const aktiv = filterTags.has(t.id)
               return (
-                <button key={t.id} type="button" onClick={() => toggleFilterTag(t.id)} title={aktiv ? 'Filter entfernen' : 'Nach diesem Tag filtern'}>
+                <button key={t.id} type="button" onClick={() => toggleFilterTag(t.id)} title={aktiv ? txt('Filter entfernen') : txt('Nach diesem Tag filtern')}>
                   <TagChip name={t.name} farbe={t.farbe} aktiv={aktiv} className={aktiv ? '' : TAG_CHIP_WAEHLBAR} />
                 </button>
               )
@@ -221,7 +229,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
           </div>
         ))}
         {filterTags.size > 1 && (
-          <TagModusSchalter modus={tagModus} onChange={setTagModus} />
+          <TagModusSchalter modus={tagModus} onChange={setTagModus} txt={txt} />
         )}
         {filterTags.size > 0 && (
           <button
@@ -229,7 +237,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
             onClick={() => setFilterTags(new Set())}
             className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
           >
-            <X size={12} /> Filter zurücksetzen
+            <X size={12} /> {txt('Filter zurücksetzen')}
           </button>
         )}
       </div>
@@ -244,7 +252,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     )
     for (const p of sorted) {
       const key = p.company?.id ?? 'ohne'
-      const entry = map.get(key) ?? { companyName: p.company?.name ?? 'Ohne Firma', projects: [] }
+      const entry = map.get(key) ?? { companyName: p.company?.name ?? txt('Ohne Firma'), projects: [] }
       entry.projects.push(p)
       map.set(key, entry)
     }
@@ -324,7 +332,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
   const handleCreateProjekt = async () => {
     setProjektError('')
     if (!projektForm.name.trim() || !projektForm.company_id) {
-      setProjektError('Name und Firma sind Pflichtfelder.')
+      setProjektError(txt('Name und Firma sind Pflichtfelder.'))
       return
     }
     setProjektLoading(true)
@@ -336,7 +344,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     const result = await res.json()
     setProjektLoading(false)
     if (!res.ok) {
-      setProjektError(result.error || 'Fehler beim Anlegen.')
+      setProjektError(result.error || txt('Fehler beim Anlegen.'))
       return
     }
     // Der Ersteller wird serverseitig immer Mitglied
@@ -354,7 +362,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
   const handleCreateTask = async () => {
     setTaskError('')
     if (!taskForm.project_id || !taskForm.titel.trim() || !taskForm.due_date) {
-      setTaskError('Projekt, Titel und Fertigstellungsdatum sind Pflichtfelder.')
+      setTaskError(txt('Projekt, Titel und Fertigstellungsdatum sind Pflichtfelder.'))
       return
     }
     setTaskLoading(true)
@@ -375,7 +383,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     const result = await res.json()
     setTaskLoading(false)
     if (!res.ok) {
-      setTaskError(result.error || 'Fehler beim Anlegen.')
+      setTaskError(result.error || txt('Fehler beim Anlegen.'))
       return
     }
 
@@ -424,31 +432,31 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-gray-500">
             <span className="inline-flex items-center gap-1 text-[#1a5276]">
               <FolderOpen size={12} />
-              {task.project?.name ?? 'Unbekanntes Projekt'}
+              {task.project?.name ?? txt('Unbekanntes Projekt')}
             </span>
             <span className={ueberfaellig ? 'text-red-600 font-semibold' : ''}>
-              Fällig: {formatDate(task.due_date)}
+              {txt('Fällig')}: {formatDate(task.due_date)}
             </span>
-            <span>{task.assignee ? task.assignee.full_name : 'Nicht zugewiesen'}</span>
+            <span>{task.assignee ? task.assignee.full_name : txt('Nicht zugewiesen')}</span>
             {task.folder_id && (
               <span className="inline-flex items-center gap-1">
                 <Folder size={12} />
-                {folders.find(f => f.id === task.folder_id)?.name ?? 'Ordner'}
+                {folders.find(f => f.id === task.folder_id)?.name ?? txt('Ordner')}
               </span>
             )}
-            {task.parent_task_id && <span>Unter-Task</span>}
+            {task.parent_task_id && <span>{txt('Unter-Task')}</span>}
             {'trefferInNotiz' in task && task.trefferInNotiz && (
               <span className="inline-flex items-center gap-1">
-                <MessageSquare size={12} /> Treffer in Notiz
+                <MessageSquare size={12} /> {txt('Treffer in Notiz')}
               </span>
             )}
           </div>
         </div>
         <div className="flex flex-wrap justify-end items-center gap-x-2 gap-y-1 shrink-0 max-w-[45%] sm:max-w-none">
           {zeigeStatus && task.status === 'geschlossen' && (
-            <Badge variant="default"><Archive size={11} className="mr-1" />Archiviert</Badge>
+            <Badge variant="default"><Archive size={11} className="mr-1" />{txt('Archiviert')}</Badge>
           )}
-          {ueberfaellig && <Badge variant="danger">Überfällig</Badge>}
+          {ueberfaellig && <Badge variant="danger">{txt('Überfällig')}</Badge>}
           <ChevronRight size={18} className="text-gray-400" />
         </div>
       </Link>
@@ -470,7 +478,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               size="sm"
               className="flex-1 sm:flex-none py-2.5 sm:py-1.5"
             >
-              <Plus size={16} /> Neue Aufgabe
+              <Plus size={16} /> {txt('Neue Aufgabe')}
             </Button>
           )}
           {isManager && (
@@ -480,7 +488,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               size="sm"
               className="flex-1 sm:flex-none py-2.5 sm:py-1.5"
             >
-              <Plus size={16} /> Neues Projekt
+              <Plus size={16} /> {txt('Neues Projekt')}
             </Button>
           )}
         </div>
@@ -489,9 +497,9 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       {/* Tabs — auf schmalen Displays horizontal scrollbar statt umbrechend */}
       <div className="flex items-center gap-1 border-b border-gray-200 mb-4 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto">
         {([
-          ['projekte', `Projekte (${projects.length})`],
+          ['projekte', txt('Projekte ({0})', projects.length)],
           ['faellig', `Fällig${ueberfaelligAnzahl > 0 ? ` (${ueberfaelligAnzahl} überfällig)` : ''}`],
-          ['suche', 'Suche'],
+          ['suche', txt('Suche')],
         ] as const).map(([key, label]) => (
           <button
             key={key}
@@ -510,8 +518,8 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
             <div className="text-center py-16 text-gray-500">
               <ClipboardList size={40} className="mx-auto mb-3 text-gray-300" />
               {isManager
-                ? 'Noch keine Projekte. Lege das erste Projekt an.'
-                : 'Dir wurden noch keine Projekte zugewiesen.'}
+                ? txt('Noch keine Projekte. Lege das erste Projekt an.')
+                : txt('Dir wurden noch keine Projekte zugewiesen.')}
             </div>
           )}
           {grouped.map(group => (
@@ -530,7 +538,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
                         <div className="flex items-center gap-2">
                           <span className="font-semibold text-gray-800 truncate">{project.name}</span>
                           {project.status === 'archiviert' && (
-                            <Badge variant="default"><Archive size={11} className="mr-1" />Archiviert</Badge>
+                            <Badge variant="default"><Archive size={11} className="mr-1" />{txt('Archiviert')}</Badge>
                           )}
                         </div>
                         {project.beschreibung && (
@@ -539,9 +547,9 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
                         <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
                           <span className="inline-flex items-center gap-1">
                             <Users size={13} />
-                            {project.members.length} {project.members.length === 1 ? 'Mitglied' : 'Mitglieder'}
+                            {txt(project.members.length === 1 ? '{0} Mitglied' : '{0} Mitglieder', project.members.length)}
                           </span>
-                          <span>{offen} offen{offen === 1 ? 'er Task' : 'e Tasks'}</span>
+                          <span>{txt(offen === 1 ? '{0} offener Task' : '{0} offene Tasks', offen)}</span>
                         </div>
                       </div>
                       <ChevronRight size={18} className="text-gray-400 shrink-0" />
@@ -558,13 +566,13 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       {tab === 'faellig' && (
         <>
           <div className="flex flex-wrap items-center gap-2 mb-4">
-            {(Object.keys(FAELLIG_LABELS) as FaelligFilter[]).map(key => (
+            {(Object.keys(labels) as FaelligFilter[]).map(key => (
               <button
                 key={key}
                 onClick={() => setFaelligFilter(key)}
                 className={`text-xs rounded-full px-3 py-2 sm:py-1.5 border transition-colors ${faelligFilter === key ? 'bg-[#1a5276] text-white border-[#1a5276]' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
               >
-                {FAELLIG_LABELS[key]}
+                {labels[key]}
               </button>
             ))}
             <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer py-2 sm:py-0 sm:ml-2">
@@ -574,7 +582,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
                 onChange={e => setNurMeine(e.target.checked)}
                 className="w-4 h-4 accent-[#1a5276]"
               />
-              Nur meine Aufgaben
+              {txt('Nur meine Aufgaben')}
             </label>
           </div>
           {renderTagFilter()}
@@ -582,7 +590,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
             {faelligeTasks.length === 0 && (
               <div className="text-center py-16 text-gray-500">
                 <CalendarClock size={40} className="mx-auto mb-3 text-gray-300" />
-                Keine Aufgaben in diesem Zeitraum.
+                {txt('Keine Aufgaben in diesem Zeitraum.')}
               </div>
             )}
             {faelligeTasks.map(t => renderTaskZeile(t))}
@@ -599,21 +607,21 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               value={suche}
               onChange={e => setSuche(e.target.value)}
               autoFocus
-              placeholder="Über alle Projekte suchen (Titel, Beschreibung, Notizen) …"
+              placeholder={txt('Über alle Projekte suchen (Titel, Beschreibung, Notizen) …')}
               className="w-full pl-9 pr-3 py-2.5 sm:py-2 border border-gray-300 rounded-md text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
             />
           </div>
           <p className="text-xs text-gray-500 mb-3">
-            Durchsucht offene und archivierte Aufgaben in allen Projekten, die du sehen darfst.
+            {txt('Durchsucht offene und archivierte Aufgaben in allen Projekten, die du sehen darfst.')}
           </p>
           {renderTagFilter()}
           {!sucheAktiv && (
-            <p className="text-sm text-gray-400 py-8 text-center">Mindestens zwei Zeichen eingeben.</p>
+            <p className="text-sm text-gray-400 py-8 text-center">{txt('Mindestens zwei Zeichen eingeben.')}</p>
           )}
-          {sucheLaeuft && <p className="text-sm text-gray-400 py-8 text-center">Suche läuft …</p>}
+          {sucheLaeuft && <p className="text-sm text-gray-400 py-8 text-center">{txt('Suche läuft …')}</p>}
           {sucheAktiv && !sucheLaeuft && gefilterteTreffer.length === 0 && (
             <p className="text-sm text-gray-500 py-8 text-center">
-              Keine Treffer für «{suche}»{filterTags.size > 0 ? ' mit den gewählten Tags' : ''}.
+              {txt(filterTags.size > 0 ? 'Keine Treffer für «{0}» mit den gewählten Tags.' : 'Keine Treffer für «{0}».', suche)}
             </p>
           )}
           <div className="flex flex-col gap-2">
@@ -626,41 +634,41 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       <Modal
         open={taskModalOpen}
         onClose={() => setTaskModalOpen(false)}
-        title="Neue Aufgabe"
+        title={txt('Neue Aufgabe')}
         size="lg"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setTaskModalOpen(false)}>Abbrechen</Button>
-            <Button onClick={handleCreateTask} loading={taskLoading}>Aufgabe anlegen</Button>
+            <Button variant="ghost" onClick={() => setTaskModalOpen(false)}>{txt('Abbrechen')}</Button>
+            <Button onClick={handleCreateTask} loading={taskLoading}>{txt('Aufgabe anlegen')}</Button>
           </>
         }
       >
         <div className="flex flex-col gap-4">
           {taskError && <p className="text-sm text-red-600">{taskError}</p>}
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Projekt *</label>
+            <label className="text-sm font-medium text-gray-700">{txt('Projekt *')}</label>
             <select
               value={taskForm.project_id}
               onChange={e => setTaskForm(f => ({ ...f, project_id: e.target.value, assignee_id: '', folder_id: '', tag_ids: [] }))}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
             >
-              <option value="">Bitte wählen …</option>
+              <option value="">{txt('Bitte wählen …')}</option>
               {meineProjekte.map(p => (
                 <option key={p.id} value={p.id}>
                   {p.company?.name ? `${p.company.name} — ${p.name}` : p.name}
                 </option>
               ))}
             </select>
-            <p className="text-xs text-gray-500">Zur Auswahl stehen die aktiven Projekte, in denen du Mitglied bist.</p>
+            <p className="text-xs text-gray-500">{txt('Zur Auswahl stehen die aktiven Projekte, in denen du Mitglied bist.')}</p>
           </div>
           <Input
-            label="Titel *"
+            label={txt('Titel *')}
             className="text-base sm:text-sm"
             value={taskForm.titel}
             onChange={e => setTaskForm(f => ({ ...f, titel: e.target.value }))}
           />
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Beschreibung</label>
+            <label className="text-sm font-medium text-gray-700">{txt('Beschreibung')}</label>
             <textarea
               value={taskForm.beschreibung}
               onChange={e => setTaskForm(f => ({ ...f, beschreibung: e.target.value }))}
@@ -670,14 +678,14 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">Zuständig</label>
+              <label className="text-sm font-medium text-gray-700">{txt('Zuständig')}</label>
               <select
                 value={taskForm.assignee_id}
                 onChange={e => setTaskForm(f => ({ ...f, assignee_id: e.target.value }))}
                 disabled={!taskForm.project_id}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276] disabled:bg-gray-50"
               >
-                <option value="">Nicht zugewiesen</option>
+                <option value="">{txt('Nicht zugewiesen')}</option>
                 {(projects.find(p => p.id === taskForm.project_id)?.members ?? [])
                   .map(m => m.profile)
                   .filter((p): p is ProfileOption => !!p)
@@ -686,7 +694,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               </select>
             </div>
             <Input
-              label="Fertigstellungsdatum *"
+              label={txt('Fertigstellungsdatum *')}
               className="text-base sm:text-sm"
               type="date"
               value={taskForm.due_date}
@@ -694,30 +702,30 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Wiederholung</label>
+            <label className="text-sm font-medium text-gray-700">{txt('Wiederholung')}</label>
             <select
               value={taskForm.wiederholung}
               onChange={e => setTaskForm(f => ({ ...f, wiederholung: e.target.value }))}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
             >
-              <option value="">Keine</option>
-              <option value="woechentlich">Jede Woche am gleichen Tag</option>
-              <option value="monatlich">Jeden Monat am gleichen Tag</option>
-              <option value="jaehrlich">Jedes Jahr am gleichen Tag</option>
+              <option value="">{txt('Keine')}</option>
+              <option value="woechentlich">{txt('Jede Woche am gleichen Tag')}</option>
+              <option value="monatlich">{txt('Jeden Monat am gleichen Tag')}</option>
+              <option value="jaehrlich">{txt('Jedes Jahr am gleichen Tag')}</option>
             </select>
-            <p className="text-xs text-gray-500">Beim Schliessen wird automatisch der Folge-Task mit der nächsten Fälligkeit erstellt.</p>
+            <p className="text-xs text-gray-500">{txt('Beim Schliessen wird automatisch der Folge-Task mit der nächsten Fälligkeit erstellt.')}</p>
           </div>
           {/* Ordner des gewählten Projekts; Ordner selbst werden in
               der Projektansicht verwaltet */}
           {projektOrdner.length > 0 && (
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">Ordner</label>
+              <label className="text-sm font-medium text-gray-700">{txt('Ordner')}</label>
               <select
                 value={taskForm.folder_id}
                 onChange={e => setTaskForm(f => ({ ...f, folder_id: e.target.value }))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
               >
-                <option value="">Ohne Ordner</option>
+                <option value="">{txt('Ohne Ordner')}</option>
                 {projektOrdner.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </div>
@@ -726,7 +734,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               sie in der Projektansicht unter «Tags» */}
           {projektTags.length > 0 && (
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">Tags</label>
+              <label className="text-sm font-medium text-gray-700">{txt('Tags')}</label>
               <div className="flex flex-wrap items-center gap-1.5">
                 {projektTags.map(t => {
                   const gewaehlt = taskForm.tag_ids.includes(t.id)
@@ -744,7 +752,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
                   )
                 })}
               </div>
-              <p className="text-xs text-gray-500">Mehrfachauswahl möglich.</p>
+              <p className="text-xs text-gray-500">{txt('Mehrfachauswahl möglich.')}</p>
             </div>
           )}
         </div>
@@ -754,37 +762,37 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       <Modal
         open={projektModalOpen}
         onClose={() => setProjektModalOpen(false)}
-        title="Neues Projekt"
+        title={txt('Neues Projekt')}
         size="lg"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setProjektModalOpen(false)}>Abbrechen</Button>
-            <Button onClick={handleCreateProjekt} loading={projektLoading}>Projekt anlegen</Button>
+            <Button variant="ghost" onClick={() => setProjektModalOpen(false)}>{txt('Abbrechen')}</Button>
+            <Button onClick={handleCreateProjekt} loading={projektLoading}>{txt('Projekt anlegen')}</Button>
           </>
         }
       >
         <div className="flex flex-col gap-4">
           {projektError && <p className="text-sm text-red-600">{projektError}</p>}
           <Input
-            label="Projektname *"
+            label={txt('Projektname *')}
             className="text-base sm:text-sm"
             value={projektForm.name}
             onChange={e => setProjektForm(f => ({ ...f, name: e.target.value }))}
-            placeholder="z. B. Website-Relaunch"
+            placeholder={txt('z. B. Website-Relaunch')}
           />
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Firma *</label>
+            <label className="text-sm font-medium text-gray-700">{txt('Firma *')}</label>
             <select
               value={projektForm.company_id}
               onChange={e => setProjektForm(f => ({ ...f, company_id: e.target.value }))}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
             >
-              <option value="">Bitte wählen …</option>
+              <option value="">{txt('Bitte wählen …')}</option>
               {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Beschreibung</label>
+            <label className="text-sm font-medium text-gray-700">{txt('Beschreibung')}</label>
             <textarea
               value={projektForm.beschreibung}
               onChange={e => setProjektForm(f => ({ ...f, beschreibung: e.target.value }))}
@@ -793,7 +801,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
             />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Mitglieder</label>
+            <label className="text-sm font-medium text-gray-700">{txt('Mitglieder')}</label>
             <p className="text-xs text-gray-500 mb-1">Nur Mitglieder können Tasks zugewiesen bekommen. Zur Auswahl stehen Personen mit dem Recht «Projekt-Mgt verwenden» sowie Admins. Du wirst automatisch Mitglied.</p>
             <div className="border border-gray-200 rounded-md max-h-48 overflow-y-auto divide-y divide-gray-100">
               {profiles.map(p => (

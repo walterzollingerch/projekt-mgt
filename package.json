@@ -1,6 +1,6 @@
 {
   "name": "@tomtalent/projekt-mgt",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": false,
   "description": "Projekt-Mgt — Projekte, Aufgaben, Ordner, Tags, Notizen und MCP-Zugang. Geteilt zwischen TT Portal und Terramay.",
   "type": "module",
@@ -20,7 +20,8 @@
     "README.md"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "texte-pruefen": "node werkzeug/texte-pruefen.mjs"
   },
   "peerDependencies": {
     "@supabase/supabase-js": "^2.105.1",

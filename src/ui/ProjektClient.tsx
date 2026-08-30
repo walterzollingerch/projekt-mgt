@@ -12,6 +12,7 @@ import { createClient } from './supabaseBrowser'
 import { formatDate } from '../hilfen'
 import TagModusSchalter from './komponenten/TagModusSchalter'
 import { TAG_FARBEN, TAG_FARB_LABELS, TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagFarbe, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
+import { machT, type Woerterbuch } from './texte'
 
 interface ProfileOption {
   id: string
@@ -62,11 +63,11 @@ interface TaskRow {
   tags?: TaskTagRef[]
 }
 
-const WIEDERHOLUNG_LABELS: Record<string, string> = {
-  woechentlich: 'Jede Woche am gleichen Tag',
-  monatlich: 'Jeden Monat am gleichen Tag',
-  jaehrlich: 'Jedes Jahr am gleichen Tag',
-}
+const wiederholungLabels = (txt: (d: string) => string): Record<string, string> => ({
+  woechentlich: txt('Jede Woche am gleichen Tag'),
+  monatlich: txt('Jeden Monat am gleichen Tag'),
+  jaehrlich: txt('Jedes Jahr am gleichen Tag'),
+})
 
 function noteCount(task: TaskRow): number {
   return task.notes?.[0]?.count ?? 0
@@ -106,6 +107,9 @@ interface ProjektClientProps {
   moveProjekte: MoveProjekt[]
   isManager: boolean
   userId: string
+  /** Beschriftungen überschreiben; fehlt ein Eintrag, bleibt der
+   *  deutsche Text stehen. Inhalte werden nie übersetzt. */
+  texte?: Woerterbuch
   /** Unter welchem Pfad die Modul-Seiten in dieser App hängen
    *  (Portal `/aufgaben`, Terramay `/dashboard/projekte`). */
   basisPfad?: string
@@ -147,7 +151,8 @@ function istUeberfaellig(task: TaskRow): boolean {
   return new Date(`${task.due_date}T00:00:00`) < heute
 }
 
-export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben' }: ProjektClientProps) {
+export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben', texte }: ProjektClientProps) {
+  const txt = machT(texte)
   const supabase = createClient()
   const [project, setProject] = useState(initialProject)
   const [members, setMembers] = useState(initialProject.members)
@@ -322,7 +327,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const handleCreateTask = async () => {
     setError('')
     if (!taskForm.titel.trim() || !taskForm.due_date) {
-      setError('Titel und Fertigstellungsdatum sind Pflichtfelder.')
+      setError(txt('Titel und Fertigstellungsdatum sind Pflichtfelder.'))
       return
     }
     setLoading(true)
@@ -345,7 +350,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const result = await res.json()
     setLoading(false)
     if (!res.ok) {
-      setError(result.error || 'Fehler beim Anlegen.')
+      setError(result.error || txt('Fehler beim Anlegen.'))
       return
     }
     setTasks(prev => [...prev, { ...result.task, notes: [{ count: 0 }] }])
@@ -366,7 +371,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const result = await res.json()
     setLoading(false)
     if (!res.ok) {
-      setError(result.error || 'Fehler beim Speichern.')
+      setError(result.error || txt('Fehler beim Speichern.'))
       return false
     }
     // Notiz-Zähler beibehalten — die API liefert ihn nicht mit
@@ -383,7 +388,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const handleSaveDetail = async () => {
     setError('')
     if (!detailForm.titel.trim() || !detailForm.due_date) {
-      setError('Titel und Fertigstellungsdatum sind Pflichtfelder.')
+      setError(txt('Titel und Fertigstellungsdatum sind Pflichtfelder.'))
       return
     }
     if (!detailTask) return
@@ -421,7 +426,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       // Projekt — aus dieser Liste entfernen
       setTasks(prev => prev.filter(t => t.id !== taskId && t.parent_task_id !== taskId))
       setMoveHinweis({
-        text: `Aufgabe wurde ins Projekt «${zielProjekt.name}» verschoben.`,
+        text: txt('Aufgabe wurde ins Projekt «{0}» verschoben.', zielProjekt.name),
         href: `${basisPfad}/${zielProjekt.id}?task=${taskId}`,
       })
     }
@@ -440,7 +445,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   }
 
   const handleDeleteTask = async () => {
-    if (!detailTask || !confirm('Task endgültig löschen? (Schliessen archiviert ihn stattdessen.)')) return
+    if (!detailTask || !confirm(txt('Task endgültig löschen? (Schliessen archiviert ihn stattdessen.)'))) return
     setLoading(true)
     const res = await fetch(`/api/aufgaben/tasks/${detailTask.id}`, { method: 'DELETE' })
     setLoading(false)
@@ -464,7 +469,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         .from('task-attachments')
         .upload(path, noteFile)
       if (uploadError) {
-        setError('Datei konnte nicht hochgeladen werden.')
+        setError(txt(txt('Datei konnte nicht hochgeladen werden.')))
         setNoteSaving(false)
         return
       }
@@ -498,7 +503,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         t.id === detailTask.id ? { ...t, notes: [{ count: noteCount(t) + 1 }] } : t
       ))
     } else {
-      setError(result.error || 'Notiz konnte nicht gespeichert werden.')
+      setError(result.error || txt('Notiz konnte nicht gespeichert werden.'))
     }
   }
 
@@ -549,7 +554,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const result = await res.json()
     setFolderBusyId(null)
     if (!res.ok) {
-      setFolderError(result.error || 'Ordner konnte nicht angelegt werden.')
+      setFolderError(result.error || txt('Ordner konnte nicht angelegt werden.'))
       return
     }
     setFolders(prev => [...prev, result.folder])
@@ -568,7 +573,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const result = await res.json()
     setFolderBusyId(null)
     if (!res.ok) {
-      setFolderError(result.error || 'Ordner konnte nicht gespeichert werden.')
+      setFolderError(result.error || txt('Ordner konnte nicht gespeichert werden.'))
       return
     }
     setFolders(prev => prev.map(f => (f.id === folderId ? { ...f, name: result.folder.name } : f)))
@@ -599,13 +604,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const handleDeleteFolder = async (folder: FolderRow) => {
     const offen = offeneImOrdner(folder.id)
     if (offen > 0) {
-      setFolderError(`«${folder.name}» enthält noch ${offen} offene ${offen === 1 ? 'Aufgabe' : 'Aufgaben'} — zuerst schliessen oder in einen anderen Ordner verschieben.`)
+      setFolderError(txt(offen === 1 ? '«{0}» enthält noch {1} offene Aufgabe — zuerst schliessen oder in einen anderen Ordner verschieben.' : '«{0}» enthält noch {1} offene Aufgaben — zuerst schliessen oder in einen anderen Ordner verschieben.', folder.name, offen))
       return
     }
     const archiviert = gesamtImOrdner(folder.id)
     const frage = archiviert > 0
-      ? `Ordner «${folder.name}» löschen? Die ${archiviert} archivierten Aufgaben bleiben erhalten und stehen danach ohne Ordner.`
-      : `Ordner «${folder.name}» löschen?`
+      ? txt('Ordner «{0}» löschen? Die {1} archivierten Aufgaben bleiben erhalten und stehen danach ohne Ordner.', folder.name, archiviert)
+      : txt('Ordner «{0}» löschen?', folder.name)
     if (!confirm(frage)) return
 
     setFolderError('')
@@ -614,7 +619,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     setFolderBusyId(null)
     if (!res.ok) {
       const result = await res.json().catch(() => ({}))
-      setFolderError(result.error || 'Ordner konnte nicht gelöscht werden.')
+      setFolderError(result.error || txt('Ordner konnte nicht gelöscht werden.'))
       return
     }
     setFolders(prev => prev.filter(f => f.id !== folder.id))
@@ -663,7 +668,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const result = await res.json()
     setTagBusyId(null)
     if (!res.ok) {
-      setTagError(result.error || 'Tag konnte nicht angelegt werden.')
+      setTagError(result.error || txt('Tag konnte nicht angelegt werden.'))
       return
     }
     setTags(prev => [...prev, result.tag])
@@ -682,7 +687,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const result = await res.json()
     setTagBusyId(null)
     if (!res.ok) {
-      setTagError(result.error || 'Tag konnte nicht gespeichert werden.')
+      setTagError(result.error || txt('Tag konnte nicht gespeichert werden.'))
       return
     }
     setTags(prev => prev.map(t => (t.id === tagId ? { ...t, name: result.tag.name, farbe: result.tag.farbe } : t)))
@@ -722,8 +727,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const handleDeleteTag = async (tag: TagRow) => {
     const hier = tagVerwendung(tag.id)
     const frage = hier > 0
-      ? `Tag «${tag.name}» löschen? Er wird aus ${hier} ${hier === 1 ? 'Aufgabe' : 'Aufgaben'} dieses Projekts entfernt — und aus allen weiteren Aufgaben von ${project.company?.name ?? 'dieser Firma'}. Die Aufgaben selbst bleiben bestehen.`
-      : `Tag «${tag.name}» löschen? Er verschwindet aus allen Projekten von ${project.company?.name ?? 'dieser Firma'}.`
+      ? txt(hier === 1 ? 'Tag «{0}» löschen? Er wird aus {1} Aufgabe dieses Projekts entfernt — und aus allen weiteren Aufgaben von {2}. Die Aufgaben selbst bleiben bestehen.' : 'Tag «{0}» löschen? Er wird aus {1} Aufgaben dieses Projekts entfernt — und aus allen weiteren Aufgaben von {2}. Die Aufgaben selbst bleiben bestehen.', tag.name, hier, project.company?.name ?? txt('dieser Firma'))
+      : txt('Tag «{0}» löschen? Er verschwindet aus allen Projekten von {1}.', tag.name, project.company?.name ?? txt('dieser Firma'))
     if (!confirm(frage)) return
 
     setTagError('')
@@ -732,7 +737,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     setTagBusyId(null)
     if (!res.ok) {
       const result = await res.json().catch(() => ({}))
-      setTagError(result.error || 'Tag konnte nicht gelöscht werden.')
+      setTagError(result.error || txt('Tag konnte nicht gelöscht werden.'))
       return
     }
     setTags(prev => prev.filter(t => t.id !== tag.id))
@@ -761,7 +766,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     if (res.ok) {
       setMembers(prev => [...prev, result.member])
     } else {
-      setMemberError(result.error || 'Mitglied konnte nicht zugefügt werden.')
+      setMemberError(result.error || txt('Mitglied konnte nicht zugefügt werden.'))
     }
   }
 
@@ -774,7 +779,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       setMembers(prev => prev.filter(m => m.profile_id !== profileId))
     } else {
       const result = await res.json().catch(() => ({}))
-      setMemberError(result.error || 'Mitglied konnte nicht entfernt werden.')
+      setMemberError(result.error || txt('Mitglied konnte nicht entfernt werden.'))
     }
   }
 
@@ -782,7 +787,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const handleSaveProject = async () => {
     setError('')
     if (!projectForm.name.trim()) {
-      setError('Der Projektname darf nicht leer sein.')
+      setError(txt('Der Projektname darf nicht leer sein.'))
       return
     }
     setLoading(true)
@@ -794,7 +799,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const result = await res.json()
     setLoading(false)
     if (!res.ok) {
-      setError(result.error || 'Fehler beim Speichern.')
+      setError(result.error || txt('Fehler beim Speichern.'))
       return
     }
     setProject(prev => ({ ...prev, ...result.project, members: prev.members }))
@@ -845,18 +850,18 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           <span className={istUeberfaellig(task) ? 'text-red-600 font-semibold' : ''}>
             Fällig: {formatDate(task.due_date)}
           </span>
-          <span>{task.assignee ? task.assignee.full_name : 'Nicht zugewiesen'}</span>
+          <span>{task.assignee ? task.assignee.full_name : txt('Nicht zugewiesen')}</span>
           {task.wiederholung && (
-            <span className="inline-flex items-center gap-1" title={WIEDERHOLUNG_LABELS[task.wiederholung]}>
+            <span className="inline-flex items-center gap-1" title={wiederholungLabels(txt)[task.wiederholung]}>
               <Repeat size={12} />
-              {task.wiederholung === 'woechentlich' ? 'wöchentlich' : task.wiederholung === 'monatlich' ? 'monatlich' : 'jährlich'}
+              {task.wiederholung === 'woechentlich' ? txt('wöchentlich') : task.wiederholung === 'monatlich' ? txt('monatlich') : txt('jährlich')}
             </span>
           )}
           {(() => {
             const kinder = tasks.filter(t => t.parent_task_id === task.id)
             if (kinder.length === 0) return null
             const erledigt = kinder.filter(k => k.status === 'geschlossen').length
-            return <span title="Unter-Tasks erledigt">{erledigt}/{kinder.length} Unter-Tasks</span>
+            return <span title={txt('Unter-Tasks erledigt')}>{erledigt}/{kinder.length} Unter-Tasks</span>
           })()}
           {task.status === 'geschlossen' && task.closed_at && (
             <span>Geschlossen: {formatDate(task.closed_at)}</span>
@@ -874,7 +879,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         {noteCount(task) > 0 && (
           <span
             role="button"
-            title="Notizen öffnen"
+            title={txt('Notizen öffnen')}
             onClick={e => { e.stopPropagation(); openDetail(task, true) }}
             className="inline-flex items-center gap-1 text-xs text-[#1a5276] bg-[#eaf2f8] hover:bg-[#d4e6f1] rounded-full px-2.5 py-1.5 transition-colors"
           >
@@ -883,10 +888,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           </span>
         )}
         {task.status === 'geschlossen'
-          ? <Badge variant="default"><Archive size={11} className="mr-1" />Archiviert</Badge>
+          ? <Badge variant="default"><Archive size={11} className="mr-1" />{txt('Archiviert')}</Badge>
           : istUeberfaellig(task)
-            ? <Badge variant="danger">Überfällig</Badge>
-            : <Badge variant="info">Offen</Badge>}
+            ? <Badge variant="danger">{txt('Überfällig')}</Badge>
+            : <Badge variant="info">{txt('Offen')}</Badge>}
       </div>
     </button>
   )
@@ -900,7 +905,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       {moveHinweis && (
         <div className="mb-4 p-3 rounded-md bg-green-50 border border-green-200 text-sm text-green-800 flex items-center justify-between gap-3">
           <span>✓ {moveHinweis.text}</span>
-          <Link href={moveHinweis.href} className="underline shrink-0">Dort öffnen</Link>
+          <Link href={moveHinweis.href} className="underline shrink-0">{txt('Dort öffnen')}</Link>
         </div>
       )}
 
@@ -908,7 +913,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl sm:text-2xl font-bold text-[#1a5276] break-words">{project.name}</h1>
-            {project.status === 'archiviert' && <Badge variant="default">Archiviert</Badge>}
+            {project.status === 'archiviert' && <Badge variant="default">{txt('Archiviert')}</Badge>}
           </div>
           <p className="text-sm text-gray-500 mt-1">
             {project.company?.name}
@@ -985,7 +990,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           {tags.map(t => {
             const aktiv = filterTags.has(t.id)
             return (
-              <button key={t.id} type="button" onClick={() => toggleFilterTag(t.id)} title={aktiv ? 'Filter entfernen' : 'Nach diesem Tag filtern'}>
+              <button key={t.id} type="button" onClick={() => toggleFilterTag(t.id)} title={aktiv ? txt('Filter entfernen') : txt('Nach diesem Tag filtern')}>
                 <TagChip
                   name={t.name}
                   farbe={t.farbe}
@@ -996,7 +1001,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             )
           })}
           {filterTags.size > 1 && (
-            <TagModusSchalter modus={tagModus} onChange={setTagModus} />
+            <TagModusSchalter modus={tagModus} onChange={setTagModus} txt={txt} />
           )}
           {filterTags.size > 0 && (
             <button
@@ -1013,10 +1018,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       {tab === 'offen' && (
         <div className="flex flex-col gap-3">
           {offeneAnzahl === 0 && folders.length === 0 && (
-            <p className="text-sm text-gray-500 py-8 text-center">Keine offenen Tasks.</p>
+            <p className="text-sm text-gray-500 py-8 text-center">{txt('Keine offenen Tasks.')}</p>
           )}
           {filterTags.size > 0 && offeneGruppen.every(g => g.eintraege.length === 0) && (
-            <p className="text-sm text-gray-500 py-8 text-center">Keine offenen Aufgaben mit den gewählten Tags.</p>
+            <p className="text-sm text-gray-500 py-8 text-center">{txt('Keine offenen Aufgaben mit den gewählten Tags.')}</p>
           )}
           {offeneGruppen.map(({ folder, eintraege }) => {
             // Bei aktivem Tag-Filter nur Gruppen mit Treffern zeigen
@@ -1053,7 +1058,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   {darfTasksBearbeiten && (
                     <div className="flex items-center shrink-0 pr-1 sm:pr-2">
                       <button
-                        title="Aufgabe in diesem Ordner anlegen"
+                        title={txt('Aufgabe in diesem Ordner anlegen')}
                         onClick={() => {
                           setTaskForm({ ...emptyTaskForm, folder_id: folder?.id ?? '' })
                           setSubtaskParent(null)
@@ -1066,7 +1071,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       </button>
                       {folder && (
                         <button
-                          title="Ordner umbenennen"
+                          title={txt('Ordner umbenennen')}
                           onClick={() => oeffneOrdnerVerwaltung(folder)}
                           className="p-2.5 text-gray-400 hover:text-[#1a5276] hover:bg-gray-100 rounded-md transition-colors"
                         >
@@ -1079,7 +1084,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 {offen && (
                   <div className="flex flex-col gap-2 p-2 sm:p-3">
                     {eintraege.length === 0
-                      ? <p className="text-xs text-gray-400 py-3 text-center">Keine offenen Aufgaben in diesem Ordner.</p>
+                      ? <p className="text-xs text-gray-400 py-3 text-center">{txt('Keine offenen Aufgaben in diesem Ordner.')}</p>
                       : eintraege.map(({ task, istKind }) => renderTaskRow(task, istKind))}
                   </div>
                 )}
@@ -1096,13 +1101,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Archiv durchsuchen (Titel, Beschreibung, Zuständiger) …"
+              placeholder={txt('Archiv durchsuchen (Titel, Beschreibung, Zuständiger) …')}
               className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
             />
           </div>
           {archivierteTasks.length === 0 && (
             <p className="text-sm text-gray-500 py-8 text-center">
-              {search || filterTags.size > 0 ? 'Keine archivierten Tasks gefunden.' : 'Noch keine archivierten Tasks.'}
+              {search || filterTags.size > 0 ? txt('Keine archivierten Tasks gefunden.') : txt('Noch keine archivierten Tasks.')}
             </p>
           )}
           {archivierteTasks.map(t => renderTaskRow(t))}
@@ -1113,12 +1118,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       <Modal
         open={taskModalOpen}
         onClose={() => { setSubtaskParent(null); setTaskModalOpen(false) }}
-        title={subtaskParent ? 'Neuer Unter-Task' : 'Neuer Task'}
+        title={subtaskParent ? txt('Neuer Unter-Task') : txt('Neuer Task')}
         size="lg"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setTaskModalOpen(false)}>Abbrechen</Button>
-            <Button onClick={handleCreateTask} loading={loading}>Task anlegen</Button>
+            <Button variant="ghost" onClick={() => setTaskModalOpen(false)}>{txt('Abbrechen')}</Button>
+            <Button onClick={handleCreateTask} loading={loading}>{txt('Task anlegen')}</Button>
           </>
         }
       >
@@ -1131,13 +1136,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             </p>
           )}
           <Input
-            label="Titel *"
+            label={txt('Titel *')}
             className="text-base sm:text-sm"
             value={taskForm.titel}
             onChange={e => setTaskForm(f => ({ ...f, titel: e.target.value }))}
           />
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Beschreibung</label>
+            <label className="text-sm font-medium text-gray-700">{txt('Beschreibung')}</label>
             <textarea
               value={taskForm.beschreibung}
               onChange={e => setTaskForm(f => ({ ...f, beschreibung: e.target.value }))}
@@ -1147,18 +1152,18 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">Zuständig</label>
+              <label className="text-sm font-medium text-gray-700">{txt('Zuständig')}</label>
               <select
                 value={taskForm.assignee_id}
                 onChange={e => setTaskForm(f => ({ ...f, assignee_id: e.target.value }))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
               >
-                <option value="">Nicht zugewiesen</option>
+                <option value="">{txt('Nicht zugewiesen')}</option>
                 {memberOptions.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
               </select>
             </div>
             <Input
-              label="Fertigstellungsdatum *"
+              label={txt('Fertigstellungsdatum *')}
               className="text-base sm:text-sm"
               type="date"
               value={taskForm.due_date}
@@ -1167,42 +1172,42 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           </div>
           {!subtaskParent && (
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">Wiederholung</label>
+              <label className="text-sm font-medium text-gray-700">{txt('Wiederholung')}</label>
               <select
                 value={taskForm.wiederholung}
                 onChange={e => setTaskForm(f => ({ ...f, wiederholung: e.target.value }))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
               >
-                <option value="">Keine</option>
-                <option value="woechentlich">Jede Woche am gleichen Tag</option>
-                <option value="monatlich">Jeden Monat am gleichen Tag</option>
-                <option value="jaehrlich">Jedes Jahr am gleichen Tag</option>
+                <option value="">{txt('Keine')}</option>
+                <option value="woechentlich">{txt('Jede Woche am gleichen Tag')}</option>
+                <option value="monatlich">{txt('Jeden Monat am gleichen Tag')}</option>
+                <option value="jaehrlich">{txt('Jedes Jahr am gleichen Tag')}</option>
               </select>
-              <p className="text-xs text-gray-500">Beim Schliessen wird automatisch der Folge-Task mit der nächsten Fälligkeit erstellt.</p>
+              <p className="text-xs text-gray-500">{txt('Beim Schliessen wird automatisch der Folge-Task mit der nächsten Fälligkeit erstellt.')}</p>
             </div>
           )}
           {!subtaskParent && folders.length > 0 && (
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">Ordner</label>
+              <label className="text-sm font-medium text-gray-700">{txt('Ordner')}</label>
               <select
                 value={taskForm.folder_id}
                 onChange={e => setTaskForm(f => ({ ...f, folder_id: e.target.value }))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
               >
-                <option value="">Ohne Ordner</option>
+                <option value="">{txt('Ohne Ordner')}</option>
                 {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </div>
           )}
           {subtaskParent && subtaskParent.folder_id && (
             <p className="text-xs text-gray-500">
-              Der Unter-Task liegt im Ordner «{folders.find(f => f.id === subtaskParent.folder_id)?.name ?? 'Unbekannt'}» des Mutter-Tasks.
+              Der Unter-Task liegt im Ordner «{folders.find(f => f.id === subtaskParent.folder_id)?.name ?? txt('Unbekannt')}» des Mutter-Tasks.
             </p>
           )}
           {/* Tags der Firma — Mehrfachauswahl */}
           {tags.length > 0 && (
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">Tags</label>
+              <label className="text-sm font-medium text-gray-700">{txt('Tags')}</label>
               <div className="flex flex-wrap items-center gap-1.5">
                 {tags.map(t => {
                   const gewaehlt = taskForm.tag_ids.includes(t.id)
@@ -1213,7 +1218,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   )
                 })}
               </div>
-              <p className="text-xs text-gray-500">Mehrfachauswahl möglich. Tags gelten für alle Projekte von {project.company?.name ?? 'dieser Firma'}.</p>
+              <p className="text-xs text-gray-500">{txt('Mehrfachauswahl möglich. Tags gelten für alle Projekte von {0}.', project.company?.name ?? txt('dieser Firma'))}</p>
             </div>
           )}
         </div>
@@ -1223,7 +1228,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       <Modal
         open={!!detailTask}
         onClose={() => setDetailTask(null)}
-        title={detailTask?.status === 'geschlossen' ? 'Task (archiviert)' : 'Task'}
+        title={detailTask?.status === 'geschlossen' ? txt('Task (archiviert)') : txt('Task')}
         size="xl"
         footer={
           detailTask ? (
@@ -1240,11 +1245,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     onClick={handleClose}
                     loading={loading}
                     disabled={detailOffeneKinder > 0}
-                    title={detailOffeneKinder > 0 ? `Erst möglich, wenn alle Unter-Tasks geschlossen sind (${detailOffeneKinder} offen)` : undefined}
+                    title={detailOffeneKinder > 0 ? txt('Erst möglich, wenn alle Unter-Tasks geschlossen sind ({0} offen)', detailOffeneKinder) : undefined}
                   >
-                    <CheckCircle2 size={15} /> Schliessen<span className="hidden sm:inline">&nbsp;&amp; archivieren</span>
+                    <CheckCircle2 size={15} />{txt('Schliessen')}<span className="hidden sm:inline">&nbsp;&amp; archivieren</span>
                   </Button>
-                  <Button onClick={handleSaveDetail} loading={loading}>Speichern</Button>
+                  <Button onClick={handleSaveDetail} loading={loading}>{txt('Speichern')}</Button>
                 </>
               ) : (
                 <Button variant="secondary" onClick={handleReactivate} loading={loading}>
@@ -1275,13 +1280,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             {detailTask.status === 'offen' ? (
               <>
                 <Input
-                  label="Titel *"
+                  label={txt('Titel *')}
                   className="text-base sm:text-sm"
                   value={detailForm.titel}
                   onChange={e => setDetailForm(f => ({ ...f, titel: e.target.value }))}
                 />
                 <div className="flex flex-col gap-1">
-                  <label className="text-sm font-medium text-gray-700">Beschreibung</label>
+                  <label className="text-sm font-medium text-gray-700">{txt('Beschreibung')}</label>
                   <textarea
                     value={detailForm.beschreibung}
                     onChange={e => setDetailForm(f => ({ ...f, beschreibung: e.target.value }))}
@@ -1291,18 +1296,18 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1">
-                    <label className="text-sm font-medium text-gray-700">Zuständig</label>
+                    <label className="text-sm font-medium text-gray-700">{txt('Zuständig')}</label>
                     <select
                       value={detailForm.assignee_id}
                       onChange={e => setDetailForm(f => ({ ...f, assignee_id: e.target.value }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
                     >
-                      <option value="">Nicht zugewiesen</option>
+                      <option value="">{txt('Nicht zugewiesen')}</option>
                       {memberOptions.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
                     </select>
                   </div>
                   <Input
-                    label="Fertigstellungsdatum *"
+                    label={txt('Fertigstellungsdatum *')}
                     className="text-base sm:text-sm"
                     type="date"
                     value={detailForm.due_date}
@@ -1311,48 +1316,48 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 </div>
                 {!detailTask.parent_task_id && (
                   <div className="flex flex-col gap-1">
-                    <label className="text-sm font-medium text-gray-700">Wiederholung</label>
+                    <label className="text-sm font-medium text-gray-700">{txt('Wiederholung')}</label>
                     <select
                       value={detailForm.wiederholung}
                       onChange={e => setDetailForm(f => ({ ...f, wiederholung: e.target.value }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
                     >
-                      <option value="">Keine</option>
-                      <option value="woechentlich">Jede Woche am gleichen Tag</option>
-                      <option value="monatlich">Jeden Monat am gleichen Tag</option>
-                      <option value="jaehrlich">Jedes Jahr am gleichen Tag</option>
+                      <option value="">{txt('Keine')}</option>
+                      <option value="woechentlich">{txt('Jede Woche am gleichen Tag')}</option>
+                      <option value="monatlich">{txt('Jeden Monat am gleichen Tag')}</option>
+                      <option value="jaehrlich">{txt('Jedes Jahr am gleichen Tag')}</option>
                     </select>
-                    <p className="text-xs text-gray-500">Beim Schliessen wird automatisch der Folge-Task mit der nächsten Fälligkeit erstellt.</p>
+                    <p className="text-xs text-gray-500">{txt('Beim Schliessen wird automatisch der Folge-Task mit der nächsten Fälligkeit erstellt.')}</p>
                   </div>
                 )}
                 {!detailTask.parent_task_id && folders.length > 0 && (
                   <div className="flex flex-col gap-1">
-                    <label className="text-sm font-medium text-gray-700">Ordner</label>
+                    <label className="text-sm font-medium text-gray-700">{txt('Ordner')}</label>
                     <select
                       value={detailForm.project_id !== detailTask.project_id ? '' : detailForm.folder_id}
                       onChange={e => setDetailForm(f => ({ ...f, folder_id: e.target.value }))}
                       disabled={detailForm.project_id !== detailTask.project_id}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276] disabled:bg-gray-50 disabled:text-gray-400"
                     >
-                      <option value="">Ohne Ordner</option>
+                      <option value="">{txt('Ohne Ordner')}</option>
                       {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
                     </select>
                     {detailForm.project_id !== detailTask.project_id
-                      ? <p className="text-xs text-amber-700">Ordner gehören zu einem Projekt — beim Umhängen fällt die Zuordnung weg.</p>
+                      ? <p className="text-xs text-amber-700">{txt('Ordner gehören zu einem Projekt — beim Umhängen fällt die Zuordnung weg.')}</p>
                       : detailKinder.length > 0
-                        ? <p className="text-xs text-gray-500">Die Unter-Tasks ziehen in denselben Ordner mit.</p>
+                        ? <p className="text-xs text-gray-500">{txt('Die Unter-Tasks ziehen in denselben Ordner mit.')}</p>
                         : null}
                   </div>
                 )}
                 {detailTask.parent_task_id && detailTask.folder_id && (
                   <p className="text-xs text-gray-500">
-                    Ordner: «{folders.find(f => f.id === detailTask.folder_id)?.name ?? 'Unbekannt'}» — Unter-Tasks folgen dem Ordner des Mutter-Tasks.
+                    Ordner: «{folders.find(f => f.id === detailTask.folder_id)?.name ?? txt('Unbekannt')}» — Unter-Tasks folgen dem Ordner des Mutter-Tasks.
                   </p>
                 )}
                 {/* Tags der Firma — Mehrfachauswahl */}
                 {tags.length > 0 && (
                   <div className="flex flex-col gap-1">
-                    <label className="text-sm font-medium text-gray-700">Tags</label>
+                    <label className="text-sm font-medium text-gray-700">{txt('Tags')}</label>
                     <div className="flex flex-wrap items-center gap-1.5">
                       {tags.map(t => {
                         const gewaehlt = !detailFirmenwechsel && detailForm.tag_ids.includes(t.id)
@@ -1371,14 +1376,14 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     </div>
                     {detailFirmenwechsel
                       ? <p className="text-xs text-amber-700">Tags gelten pro Firma — beim Wechsel zu «{detailZielProjekt?.company_name}» fallen sie weg.</p>
-                      : <p className="text-xs text-gray-500">Mehrfachauswahl möglich. Tags gelten für alle Projekte von {project.company?.name ?? 'dieser Firma'}.</p>}
+                      : <p className="text-xs text-gray-500">{txt('Mehrfachauswahl möglich. Tags gelten für alle Projekte von {0}.', project.company?.name ?? txt('dieser Firma'))}</p>}
                   </div>
                 )}
                 {/* Umhängen — Unter-Tasks ziehen mit dem Mutter-Task mit
                     und lassen sich nicht einzeln verschieben */}
                 {!detailTask.parent_task_id && moveProjekte.length > 1 && (
                   <div className="flex flex-col gap-1">
-                    <label className="text-sm font-medium text-gray-700">Projekt</label>
+                    <label className="text-sm font-medium text-gray-700">{txt('Projekt')}</label>
                     <select
                       value={detailForm.project_id}
                       onChange={e => setDetailForm(f => ({ ...f, project_id: e.target.value }))}
@@ -1392,11 +1397,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     </select>
                     {detailForm.project_id !== detailTask.project_id ? (
                       <p className="text-xs text-amber-700">
-                        Beim Speichern wird die Aufgabe umgehängt{detailKinder.length > 0 ? ' — die Unter-Tasks ziehen mit' : ''}.
+                        {txt(detailKinder.length > 0 ? 'Beim Speichern wird die Aufgabe umgehängt — die Unter-Tasks ziehen mit.' : 'Beim Speichern wird die Aufgabe umgehängt.')}
                         Der Zuständige muss im Zielprojekt Mitglied sein.
                       </p>
                     ) : (
-                      <p className="text-xs text-gray-500">Zum Umhängen ein anderes Projekt wählen (nur Projekte, in denen du Mitglied bist).</p>
+                      <p className="text-xs text-gray-500">{txt('Zum Umhängen ein anderes Projekt wählen (nur Projekte, in denen du Mitglied bist).')}</p>
                     )}
                   </div>
                 )}
@@ -1414,9 +1419,9 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 {detailTask.beschreibung && <TextMitLinks text={detailTask.beschreibung} className="mt-1 whitespace-pre-wrap" />}
                 <div className="flex flex-wrap gap-4 mt-3 text-xs text-gray-500">
                   <span>Fällig: {formatDate(detailTask.due_date)}</span>
-                  <span>Zuständig: {detailTask.assignee?.full_name ?? 'Nicht zugewiesen'}</span>
+                  <span>Zuständig: {detailTask.assignee?.full_name ?? txt('Nicht zugewiesen')}</span>
                   {detailTask.folder_id && (
-                    <span>Ordner: {folders.find(f => f.id === detailTask.folder_id)?.name ?? 'Unbekannt'}</span>
+                    <span>Ordner: {folders.find(f => f.id === detailTask.folder_id)?.name ?? txt('Unbekannt')}</span>
                   )}
                   {detailTask.closed_at && <span>Geschlossen: {formatDate(detailTask.closed_at)}</span>}
                 </div>
@@ -1428,7 +1433,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               <div className="border-t border-gray-100 pt-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                   <h4 className="text-sm font-semibold text-gray-700">
-                    Unter-Tasks{detailKinder.length > 0 && ` (${detailKinder.length - detailOffeneKinder}/${detailKinder.length} erledigt)`}
+                    {txt('Unter-Tasks')}{detailKinder.length > 0 && txt(' ({0}/{1} erledigt)', detailKinder.length - detailOffeneKinder, detailKinder.length)}
                   </h4>
                   {darfTasksBearbeiten && detailTask.status === 'offen' && (
                     <Button
@@ -1464,8 +1469,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                           {kind.status === 'geschlossen'
                             ? <CheckCircle2 size={14} className="text-green-600" />
                             : istUeberfaellig(kind)
-                              ? <Badge variant="danger">Überfällig</Badge>
-                              : <Badge variant="info">Offen</Badge>}
+                              ? <Badge variant="danger">{txt('Überfällig')}</Badge>
+                              : <Badge variant="info">{txt('Offen')}</Badge>}
                         </span>
                       </button>
                     ))}
@@ -1476,15 +1481,15 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             {/* Notizen — chronologisch, mit Autor */}
             <div ref={notesRef} className="border-t border-gray-100 pt-4">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 mb-2">
-                <h4 className="text-sm font-semibold text-gray-700">Notizen</h4>
+                <h4 className="text-sm font-semibold text-gray-700">{txt('Notizen')}</h4>
                 {(watchers.length > 0 || detailTask.assignee || detailErsteller) && (
                   <div className="flex flex-wrap items-center gap-1 text-xs text-gray-500">
                     <Bell size={12} />
-                    <span className="mr-0.5">wird informiert:</span>
+                    <span className="mr-0.5">{txt('wird informiert:')}</span>
                     {detailTask.assignee && (
                       <span
                         className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 rounded-full px-2 py-0.5"
-                        title="Der Verantwortliche wird bei jeder Notiz automatisch informiert"
+                        title={txt('Der Verantwortliche wird bei jeder Notiz automatisch informiert')}
                       >
                         {detailTask.assignee.full_name} (verantwortlich)
                       </span>
@@ -1492,18 +1497,18 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     {detailErsteller && (
                       <span
                         className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 rounded-full px-2 py-0.5"
-                        title="Der Ersteller der Aufgabe wird bei jeder Notiz automatisch informiert"
+                        title={txt('Der Ersteller der Aufgabe wird bei jeder Notiz automatisch informiert')}
                       >
                         {detailErsteller.full_name} (Ersteller)
                       </span>
                     )}
                     {watchers.filter(w => w.profile_id !== detailTask.assignee_id && w.profile_id !== detailTask.created_by).map(w => (
                       <span key={w.profile_id} className="inline-flex items-center gap-1 bg-[#eaf2f8] text-[#1a5276] rounded-full pl-2 pr-1 py-0.5">
-                        {w.profile?.full_name ?? 'Unbekannt'}
+                        {w.profile?.full_name ?? txt('Unbekannt')}
                         {darfTasksBearbeiten && (
                           <button
                             type="button"
-                            title="Nicht mehr informieren"
+                            title={txt('Nicht mehr informieren')}
                             onClick={() => handleRemoveWatcher(w.profile_id)}
                             className="hover:bg-[#d4e6f1] rounded-full p-0.5"
                           >
@@ -1515,13 +1520,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   </div>
                 )}
               </div>
-              {notesLoading && <p className="text-sm text-gray-400">Lade Notizen …</p>}
-              {!notesLoading && notes.length === 0 && <p className="text-sm text-gray-400">Noch keine Notizen.</p>}
+              {notesLoading && <p className="text-sm text-gray-400">{txt('Lade Notizen …')}</p>}
+              {!notesLoading && notes.length === 0 && <p className="text-sm text-gray-400">{txt('Noch keine Notizen.')}</p>}
               <div className="flex flex-col gap-2">
                 {notes.map(note => (
                   <div key={note.id} className="bg-gray-50 rounded-md px-3 py-2">
                     <div className="text-xs text-gray-500 mb-0.5">
-                      <span className="font-medium text-gray-700">{note.author?.full_name ?? 'Unbekannt'}</span>
+                      <span className="font-medium text-gray-700">{note.author?.full_name ?? txt('Unbekannt')}</span>
                       {' — '}
                       {new Date(note.created_at).toLocaleString('de-CH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </div>
@@ -1533,7 +1538,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                         className="inline-flex items-center gap-1 mt-1.5 text-xs text-[#1a5276] hover:underline"
                       >
                         <Paperclip size={12} />
-                        {note.file_name ?? 'Anhang'}
+                        {note.file_name ?? txt('Anhang')}
                       </button>
                     )}
                   </div>
@@ -1545,13 +1550,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     value={noteText}
                     onChange={e => setNoteText(e.target.value)}
                     rows={2}
-                    placeholder="Notiz hinzufügen …"
+                    placeholder={txt('Notiz hinzufügen …')}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
                   />
                   <div className="flex flex-wrap items-center gap-2">
                     <label className="inline-flex items-center gap-1.5 text-xs text-gray-600 border border-gray-300 rounded-md px-2.5 py-2.5 sm:py-1.5 cursor-pointer hover:bg-gray-50">
                       <Paperclip size={13} />
-                      <span className="max-w-32 sm:max-w-40 truncate">{noteFile ? noteFile.name : 'Datei anfügen'}</span>
+                      <span className="max-w-32 sm:max-w-40 truncate">{noteFile ? noteFile.name : txt('Datei anfügen')}</span>
                       <input
                         ref={fileInputRef}
                         type="file"
@@ -1559,7 +1564,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                         onChange={e => {
                           const f = e.target.files?.[0] ?? null
                           if (f && f.size > MAX_UPLOAD_BYTES) {
-                            setError('Datei ist zu gross (max. 10 MB).')
+                            setError(txt('Datei ist zu gross (max. 10 MB).'))
                             e.target.value = ''
                             return
                           }
@@ -1570,7 +1575,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     {noteFile && (
                       <button
                         type="button"
-                        title="Datei entfernen"
+                        title={txt('Datei entfernen')}
                         onClick={() => { setNoteFile(null); if (fileInputRef.current) fileInputRef.current.value = '' }}
                         className="text-gray-400 hover:text-gray-600 p-2 -m-1"
                       >
@@ -1581,9 +1586,9 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       value={informId}
                       onChange={e => setInformId(e.target.value)}
                       className="min-w-0 flex-1 sm:flex-none text-base sm:text-xs border border-gray-300 rounded-md px-2 py-2 sm:py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
-                      title="Diese Person wird über die Notiz informiert und bleibt für künftige Notizen dieses Tasks gespeichert"
+                      title={txt('Diese Person wird über die Notiz informiert und bleibt für künftige Notizen dieses Tasks gespeichert')}
                     >
-                      <option value="">Person informieren …</option>
+                      <option value="">{txt('Person informieren …')}</option>
                       {memberOptions
                         .filter(m => m.id !== userId && m.id !== detailTask.assignee_id && m.id !== detailTask.created_by && !watchers.some(w => w.profile_id === m.id))
                         .map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
@@ -1605,7 +1610,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       <Modal
         open={folderModalOpen}
         onClose={() => { setEditFolderId(null); setFolderError(''); setFolderModalOpen(false) }}
-        title="Ordner verwalten"
+        title={txt('Ordner verwalten')}
         size="lg"
       >
         <p className="text-xs text-gray-500 mb-3">
@@ -1618,7 +1623,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
         <div className="border border-gray-200 rounded-md divide-y divide-gray-100 mb-5">
           {folders.length === 0 && (
-            <p className="px-3 py-3 text-sm text-gray-400">Noch keine Ordner angelegt.</p>
+            <p className="px-3 py-3 text-sm text-gray-400">{txt('Noch keine Ordner angelegt.')}</p>
           )}
           {folders.map((f, i) => {
             const offen = offeneImOrdner(f.id)
@@ -1656,12 +1661,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     <div className="min-w-0 flex-1">
                       <div className="text-sm text-gray-800 truncate">{f.name}</div>
                       <div className="text-xs text-gray-400">
-                        {offen} offen{gesamt > offen ? ` · ${gesamt - offen} archiviert` : ''}
+                        {txt('{0} offen', offen)}{gesamt > offen ? txt(' · {0} archiviert', gesamt - offen) : ''}
                       </div>
                     </div>
                     <div className="flex items-center shrink-0">
                       <button
-                        title="Nach oben"
+                        title={txt('Nach oben')}
                         disabled={i === 0}
                         onClick={() => handleMoveFolder(i, -1)}
                         className="p-2.5 text-gray-400 hover:text-gray-700 disabled:opacity-25 disabled:hover:text-gray-400 transition-colors"
@@ -1669,7 +1674,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                         <ArrowUp size={15} />
                       </button>
                       <button
-                        title="Nach unten"
+                        title={txt('Nach unten')}
                         disabled={i === folders.length - 1}
                         onClick={() => handleMoveFolder(i, 1)}
                         className="p-2.5 text-gray-400 hover:text-gray-700 disabled:opacity-25 disabled:hover:text-gray-400 transition-colors"
@@ -1677,14 +1682,14 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                         <ArrowDown size={15} />
                       </button>
                       <button
-                        title="Umbenennen"
+                        title={txt('Umbenennen')}
                         onClick={() => { setFolderError(''); setEditFolderId(f.id); setEditFolderName(f.name) }}
                         className="p-2.5 text-gray-400 hover:text-[#1a5276] transition-colors"
                       >
                         <Pencil size={15} />
                       </button>
                       <button
-                        title={offen > 0 ? `Nicht möglich — ${offen} offene Aufgabe(n) im Ordner` : 'Ordner löschen'}
+                        title={offen > 0 ? txt('Nicht möglich — {0} offene Aufgabe(n) im Ordner', offen) : txt('Ordner löschen')}
                         disabled={offen > 0 || folderBusyId === f.id}
                         onClick={() => handleDeleteFolder(f)}
                         className="p-2.5 text-gray-400 hover:text-red-600 disabled:opacity-25 disabled:hover:text-gray-400 transition-colors"
@@ -1699,13 +1704,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           })}
         </div>
 
-        <h4 className="text-sm font-semibold text-gray-700 mb-2">Neuer Ordner</h4>
+        <h4 className="text-sm font-semibold text-gray-700 mb-2">{txt('Neuer Ordner')}</h4>
         <div className="flex flex-col sm:flex-row gap-2">
           <input
             value={neuerFolderName}
             onChange={e => setNeuerFolderName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleCreateFolder() }}
-            placeholder="z. B. Konzept, Umsetzung, Abnahme"
+            placeholder={txt('z. B. Konzept, Umsetzung, Abnahme')}
             maxLength={100}
             className="min-w-0 flex-1 px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
           />
@@ -1726,21 +1731,17 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       <Modal
         open={tagModalOpen}
         onClose={() => { setEditTagId(null); setTagError(''); setTagModalOpen(false) }}
-        title={`Tags — ${project.company?.name ?? 'Firma'}`}
+        title={txt('Tags — {0}', project.company?.name ?? txt('Firma'))}
         size="lg"
       >
         <p className="text-xs text-gray-500 mb-3">
-          Tags werden pro Firma gepflegt und stehen in allen Projekten von{' '}
-          {project.company?.name ?? 'dieser Firma'} zur Verfügung. Eine Aufgabe
-          kann beliebig viele Tags tragen; über die Tag-Leiste lässt sich die
-          Aufgabenliste danach filtern. Löschen entfernt den Tag aus allen
-          Aufgaben der Firma — die Aufgaben selbst bleiben bestehen.
+          {txt('Tags werden pro Firma gepflegt und stehen in allen Projekten von {0} zur Verfügung. Eine Aufgabe kann beliebig viele Tags tragen; über die Tag-Leiste lässt sich die Aufgabenliste danach filtern. Löschen entfernt den Tag aus allen Aufgaben der Firma — die Aufgaben selbst bleiben bestehen.', project.company?.name ?? txt('dieser Firma'))}
         </p>
         {tagError && <p className="text-sm text-red-600 mb-3">{tagError}</p>}
 
         <div className="border border-gray-200 rounded-md divide-y divide-gray-100 mb-5">
           {tags.length === 0 && (
-            <p className="px-3 py-3 text-sm text-gray-400">Noch keine Tags angelegt.</p>
+            <p className="px-3 py-3 text-sm text-gray-400">{txt('Noch keine Tags angelegt.')}</p>
           )}
           {tags.map((t, i) => (
             <div key={t.id} className="px-3 py-2">
@@ -1793,7 +1794,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   </div>
                   <div className="flex items-center shrink-0">
                     <button
-                      title="Nach oben"
+                      title={txt('Nach oben')}
                       disabled={i === 0}
                       onClick={() => handleMoveTag(i, -1)}
                       className="p-2.5 text-gray-400 hover:text-gray-700 disabled:opacity-25 disabled:hover:text-gray-400 transition-colors"
@@ -1801,7 +1802,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       <ArrowUp size={15} />
                     </button>
                     <button
-                      title="Nach unten"
+                      title={txt('Nach unten')}
                       disabled={i === tags.length - 1}
                       onClick={() => handleMoveTag(i, 1)}
                       className="p-2.5 text-gray-400 hover:text-gray-700 disabled:opacity-25 disabled:hover:text-gray-400 transition-colors"
@@ -1809,7 +1810,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       <ArrowDown size={15} />
                     </button>
                     <button
-                      title="Umbenennen / Farbe ändern"
+                      title={txt('Umbenennen / Farbe ändern')}
                       onClick={() => {
                         setTagError('')
                         setEditTagId(t.id)
@@ -1821,7 +1822,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       <Pencil size={15} />
                     </button>
                     <button
-                      title="Tag löschen"
+                      title={txt('Tag löschen')}
                       disabled={tagBusyId === t.id}
                       onClick={() => handleDeleteTag(t)}
                       className="p-2.5 text-gray-400 hover:text-red-600 disabled:opacity-25 disabled:hover:text-gray-400 transition-colors"
@@ -1835,14 +1836,14 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           ))}
         </div>
 
-        <h4 className="text-sm font-semibold text-gray-700 mb-2">Neuer Tag</h4>
+        <h4 className="text-sm font-semibold text-gray-700 mb-2">{txt('Neuer Tag')}</h4>
         <div className="flex flex-col gap-2">
           <div className="flex flex-col sm:flex-row gap-2">
             <input
               value={neuerTagName}
               onChange={e => setNeuerTagName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleCreateTag() }}
-              placeholder="z. B. Dringend, Marketing, Budget"
+              placeholder={txt('z. B. Dringend, Marketing, Budget')}
               maxLength={60}
               className="min-w-0 flex-1 px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
             />
@@ -1873,7 +1874,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       {/* Mitglieder verwalten (nur Verwalter) — explizite Buttons
           statt Checkbox-Toggle, damit kein Klick versehentlich
           jemanden aus dem Projekt entfernt */}
-      <Modal open={memberModalOpen} onClose={() => { setMemberError(''); setMemberModalOpen(false) }} title="Projektmitglieder" size="lg">
+      <Modal open={memberModalOpen} onClose={() => { setMemberError(''); setMemberModalOpen(false) }} title={txt('Projektmitglieder')} size="lg">
         <p className="text-xs text-gray-500 mb-3">
           Nur Mitglieder können Tasks zugewiesen bekommen. Zur Auswahl stehen
           Personen mit dem Recht «Projekt-Mgt verwenden» sowie Admins.
@@ -1883,11 +1884,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
         <h4 className="text-sm font-semibold text-gray-700 mb-2">Mitglieder ({members.length})</h4>
         <div className="border border-gray-200 rounded-md divide-y divide-gray-100 mb-4">
-          {members.length === 0 && <p className="px-3 py-2 text-sm text-gray-400">Noch keine Mitglieder.</p>}
+          {members.length === 0 && <p className="px-3 py-2 text-sm text-gray-400">{txt('Noch keine Mitglieder.')}</p>}
           {members.map(m => (
             <div key={m.profile_id} className="flex items-center gap-2 px-3 py-2 text-sm">
               <div className="min-w-0 flex-1">
-                <div className="text-gray-800 truncate">{m.profile?.full_name ?? 'Unbekannt'}</div>
+                <div className="text-gray-800 truncate">{m.profile?.full_name ?? txt('Unbekannt')}</div>
                 <div className="text-gray-400 text-xs truncate">{m.profile?.email}</div>
               </div>
               <Button
@@ -1903,7 +1904,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           ))}
         </div>
 
-        <h4 className="text-sm font-semibold text-gray-700 mb-2">Hinzufügen</h4>
+        <h4 className="text-sm font-semibold text-gray-700 mb-2">{txt('Hinzufügen')}</h4>
         <div className="border border-gray-200 rounded-md max-h-64 overflow-y-auto divide-y divide-gray-100">
           {profiles.filter(p => !members.some(m => m.profile_id === p.id)).map(p => (
             <div key={p.id} className="flex items-center gap-2 px-3 py-2 text-sm">
@@ -1923,7 +1924,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             </div>
           ))}
           {profiles.filter(p => !members.some(m => m.profile_id === p.id)).length === 0 && (
-            <p className="px-3 py-2 text-sm text-gray-400">Alle berechtigten Personen sind bereits Mitglied.</p>
+            <p className="px-3 py-2 text-sm text-gray-400">{txt('Alle berechtigten Personen sind bereits Mitglied.')}</p>
           )}
         </div>
       </Modal>
@@ -1932,7 +1933,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       <Modal
         open={projectModalOpen}
         onClose={() => setProjectModalOpen(false)}
-        title="Projekt bearbeiten"
+        title={txt('Projekt bearbeiten')}
         footer={
           <>
             <Button
@@ -1948,23 +1949,23 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               }}
               className="mr-auto"
             >
-              {project.status === 'aktiv' ? 'Projekt archivieren' : 'Projekt reaktivieren'}
+              {project.status === 'aktiv' ? txt('Projekt archivieren') : txt('Projekt reaktivieren')}
             </Button>
-            <Button variant="ghost" onClick={() => setProjectModalOpen(false)}>Abbrechen</Button>
-            <Button onClick={handleSaveProject} loading={loading}>Speichern</Button>
+            <Button variant="ghost" onClick={() => setProjectModalOpen(false)}>{txt('Abbrechen')}</Button>
+            <Button onClick={handleSaveProject} loading={loading}>{txt('Speichern')}</Button>
           </>
         }
       >
         <div className="flex flex-col gap-4">
           {error && <p className="text-sm text-red-600">{error}</p>}
           <Input
-            label="Projektname *"
+            label={txt('Projektname *')}
             className="text-base sm:text-sm"
             value={projectForm.name}
             onChange={e => setProjectForm(f => ({ ...f, name: e.target.value }))}
           />
           <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Beschreibung</label>
+            <label className="text-sm font-medium text-gray-700">{txt('Beschreibung')}</label>
             <textarea
               value={projectForm.beschreibung}
               onChange={e => setProjectForm(f => ({ ...f, beschreibung: e.target.value }))}
