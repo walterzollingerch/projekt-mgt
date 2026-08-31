@@ -1428,7 +1428,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   aufräumen könnte — dort darf die Person selbst
                   löschen (Policy tasks_delete_eigen) */}
               {(isManager || istEigenesProjekt) && (
-                <Button variant="danger" onClick={handleDeleteTask} loading={loading} className="mr-auto">
+                <Button variant="danger" onClick={handleDeleteTask} loading={loading} className="sm:mr-auto">
                   <Trash2 size={14} /> Löschen
                 </Button>
               )}
@@ -2270,7 +2270,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 })
                 if (res.ok) setProject(prev => ({ ...prev, status: neu }))
               }}
-              className="mr-auto"
+              // Erst ab sm nach links absetzen: im einspaltigen Raster der
+              // Fusszeile würde ein automatischer Rand das Strecken aufheben
+              // und die Schaltfläche bliebe als einzige schmal.
+              className="sm:mr-auto"
             >
               {project.status === 'aktiv' ? txt('Projekt archivieren') : txt('Projekt reaktivieren')}
             </Button>

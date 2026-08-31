@@ -62,7 +62,14 @@ export default function Modal({ open, onClose, title, children, size = 'md', foo
         </div>
         <div className="px-4 sm:px-6 py-4 overflow-y-auto flex-1">{children}</div>
         {footer && (
-          <div className="px-4 sm:px-6 py-4 border-t border-gray-100 flex flex-wrap justify-end gap-2 sm:gap-3">
+          // Auf dem Handy untereinander über die volle Breite: nebeneinander
+          // passten drei Schaltflächen nicht in eine Zeile, die dritte rutschte
+          // rechtsbündig in eine zweite und die Reihe wirkte zerrissen. Das
+          // einspaltige Raster streckt die Schaltflächen von selbst, ohne dass
+          // jede einzelne eine Breitenklasse braucht. Die Reihenfolge bleibt
+          // wie im Markup — die Hauptaktion steht zuletzt und damit unten,
+          // am nächsten beim Daumen. Ab sm wieder wie bisher.
+          <div className="px-4 sm:px-6 py-4 border-t border-gray-100 grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:justify-end sm:gap-3">
             {footer}
           </div>
         )}
