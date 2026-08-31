@@ -1011,7 +1011,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       className={`w-full text-left bg-white rounded-lg border border-gray-200 shadow-sm p-4 hover:border-[#1a5276] transition-colors flex items-start sm:items-center justify-between gap-3 ${istKind ? 'ml-3 w-[calc(100%-0.75rem)] sm:ml-6 sm:w-[calc(100%-1.5rem)] border-l-4 border-l-[#d4e6f1]' : ''}`}
     >
       <div className="min-w-0 flex-1">
-        <div className="font-medium text-gray-800 truncate">{task.titel}</div>
+        {/* Auf dem Handy zwei Zeilen: bei den üblichen langen Titeln
+            («TASK 1398: Prüfen & Auswahl ob man …») lässt eine einzelne
+            gekürzte Zeile die Aufgaben nicht mehr unterscheiden. */}
+        <div className="font-medium text-gray-800 line-clamp-2 sm:line-clamp-none sm:truncate">{task.titel}</div>
         {tagsVonTask(task.tags, tags).length > 0 && (
           <div className="flex flex-wrap items-center gap-1 mt-1.5">
             {tagsVonTask(task.tags, tags).map(t => (
@@ -1099,16 +1102,16 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           {darfVerwalten && (
             <>
-              <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5" onClick={() => { setProjectForm({ name: project.name, beschreibung: project.beschreibung ?? '' }); setError(''); setProjectModalOpen(true) }}>
+              <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap" onClick={() => { setProjectForm({ name: project.name, beschreibung: project.beschreibung ?? '' }); setError(''); setProjectModalOpen(true) }}>
                 <Pencil size={14} /> Bearbeiten
               </Button>
-              <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5" onClick={() => setMemberModalOpen(true)}>
+              <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap" onClick={() => setMemberModalOpen(true)}>
                 <Users size={14} /> Mitglieder ({members.length})
               </Button>
             </>
           )}
           {darfTasksBearbeiten && (
-            <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5" onClick={() => oeffneOrdnerVerwaltung()}>
+            <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap" onClick={() => oeffneOrdnerVerwaltung()}>
               <FolderTree size={14} /> Ordner ({folders.length})
             </Button>
           )}
@@ -1116,19 +1119,20 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             <Button
               variant="outline"
               size="sm"
-              className="flex-1 sm:flex-none py-2.5 sm:py-1.5"
+              className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap"
               onClick={() => { setTagError(''); setEditTagId(null); setNeuerTagName(''); setTagModalOpen(true) }}
             >
               <Tags size={14} /> Tags ({tags.length})
             </Button>
           )}
           {darfTasksBearbeiten && (
-            <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5" onClick={oeffneImport}>
+            <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap" onClick={oeffneImport}>
               <FileUp size={14} /> {txt('Import')}
             </Button>
           )}
+          {/* Hauptaktion — auf dem Handy über die ganze Breite. */}
           {darfTasksBearbeiten && (
-            <Button size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5" onClick={() => { setTaskForm(emptyTaskForm); setSubtaskParent(null); setError(''); setTaskModalOpen(true) }}>
+            <Button size="sm" className="w-full sm:w-auto py-2.5 sm:py-1.5 whitespace-nowrap" onClick={() => { setTaskForm(emptyTaskForm); setSubtaskParent(null); setError(''); setTaskModalOpen(true) }}>
               <Plus size={16} /> Neuer Task
             </Button>
           )}
@@ -1853,11 +1857,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                         onClick={() => handleRenameFolder(f.id)}
                         loading={folderBusyId === f.id}
                         disabled={!editFolderName.trim()}
-                        className="flex-1 sm:flex-none py-2.5 sm:py-1.5"
+                        className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap"
                       >
                         Speichern
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setEditFolderId(null)} className="flex-1 sm:flex-none py-2.5 sm:py-1.5">
+                      <Button variant="ghost" size="sm" onClick={() => setEditFolderId(null)} className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap">
                         Abbrechen
                       </Button>
                     </div>
@@ -1969,11 +1973,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                         onClick={() => handleSaveTag(t.id)}
                         loading={tagBusyId === t.id}
                         disabled={!editTagName.trim()}
-                        className="flex-1 sm:flex-none py-2.5 sm:py-1.5"
+                        className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap"
                       >
                         Speichern
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setEditTagId(null)} className="flex-1 sm:flex-none py-2.5 sm:py-1.5">
+                      <Button variant="ghost" size="sm" onClick={() => setEditTagId(null)} className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap">
                         Abbrechen
                       </Button>
                     </div>

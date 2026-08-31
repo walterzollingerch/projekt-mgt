@@ -485,7 +485,8 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
         className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 hover:border-[#1a5276] transition-colors flex items-start sm:items-center justify-between gap-3"
       >
         <div className="min-w-0 flex-1">
-          <div className="font-medium text-gray-800 truncate">{task.titel}</div>
+          {/* Zwei Zeilen auf dem Handy — siehe renderTaskRow im ProjektClient. */}
+          <div className="font-medium text-gray-800 line-clamp-2 sm:line-clamp-none sm:truncate">{task.titel}</div>
           {tagsVonTask(task.tags, tags).length > 0 && (
             <div className="flex flex-wrap items-center gap-1 mt-1.5">
               {tagsVonTask(task.tags, tags).map(t => (
@@ -540,7 +541,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
                 setTaskModalOpen(true)
               }}
               size="sm"
-              className="flex-1 sm:flex-none py-2.5 sm:py-1.5"
+              className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap"
             >
               <Plus size={16} /> {txt('Neue Aufgabe')}
             </Button>
@@ -550,7 +551,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               variant="outline"
               onClick={() => { setProjektForm(emptyProjektForm); setProjektError(''); setProjektModalOpen(true) }}
               size="sm"
-              className="flex-1 sm:flex-none py-2.5 sm:py-1.5"
+              className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap"
             >
               <Plus size={16} /> {txt('Neues Projekt')}
             </Button>
