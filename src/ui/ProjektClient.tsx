@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -12,6 +12,7 @@ import { createClient } from './supabaseBrowser'
 import { formatDate } from '../hilfen'
 import TagModusSchalter from './komponenten/TagModusSchalter'
 import { TAG_FARBEN, TAG_FARB_LABELS, TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagFarbe, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
+import { planLesen, type ImportPlan } from '../logik/csvImport'
 import { machT, type Woerterbuch } from './texte'
 
 interface ProfileOption {
@@ -205,6 +206,15 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const [editFolderName, setEditFolderName] = useState('')
   // Eingeklappte Ordner-Sektionen ('ohne' = Aufgaben ohne Ordner)
   const [eingeklappt, setEingeklappt] = useState<Set<string>>(new Set())
+
+  // CSV-Import (Todoist-Projektvorlage)
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [importDatei, setImportDatei] = useState('')
+  const [importPlan, setImportPlan] = useState<ImportPlan | null>(null)
+  const [importErsatzDatum, setImportErsatzDatum] = useState('')
+  const [importFehler, setImportFehler] = useState('')
+  const [importLaeuft, setImportLaeuft] = useState(false)
+  const importDateiRef = useRef<HTMLInputElement>(null)
 
   // Tags (Firma) — Verwaltung und Filter
   const [tagModalOpen, setTagModalOpen] = useState(false)
@@ -840,6 +850,140 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     .filter((p): p is ProfileOption => !!p)
     .sort((a, b) => a.full_name.localeCompare(b.full_name))
 
+  // --- CSV-Import (Todoist-Projektvorlage) ---
+
+  // Vorgabe für Aufgaben ohne lesbares Datum: in einer Woche.
+  // Fälligkeit ist Pflichtfeld, Todoist-Aufgaben haben aber oft
+  // keines — ohne Vorgabe liesse sich gar nichts importieren.
+  const inEinerWoche = () => {
+    const d = new Date()
+    d.setDate(d.getDate() + 7)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
+
+  const oeffneImport = () => {
+    setImportDatei('')
+    setImportPlan(null)
+    setImportFehler('')
+    setImportErsatzDatum(inEinerWoche())
+    if (importDateiRef.current) importDateiRef.current.value = ''
+    setImportModalOpen(true)
+  }
+
+  const handleImportDatei = async (datei: File | null) => {
+    setImportFehler('')
+    setImportPlan(null)
+    if (!datei) return
+    setImportDatei(datei.name)
+    const text = await datei.text()
+    const ergebnis = planLesen(text, memberOptions)
+    if (!ergebnis.ok) {
+      setImportFehler(ergebnis.fehler)
+      return
+    }
+    setImportPlan(ergebnis.plan)
+  }
+
+  /**
+   * Schreibt den Plan. Bewusst direkt über die Datenbank statt über
+   * /api/aufgaben/tasks: dieser Weg verschickt pro Aufgabe eine
+   * Zuweisungs-Mail, und ein Import von fünfzig Aufgaben wäre für
+   * die Betroffenen eine Lawine. Zugriff und Regeln bleiben
+   * unverändert — die RLS und die Trigger prüfen jede Zeile.
+   */
+  const handleImportAusfuehren = async () => {
+    if (!importPlan) return
+    if (!importErsatzDatum) {
+      setImportFehler(txt('Bitte eine Fälligkeit für Aufgaben ohne Datum angeben.'))
+      return
+    }
+    setImportFehler('')
+    setImportLaeuft(true)
+
+    // 1. Fehlende Ordner anlegen; bestehende gleichen Namens weiter
+    //    benutzen, statt Dubletten zu erzeugen
+    const ordnerKarte = new Map(folders.map(f => [f.name.toLowerCase(), f.id]))
+    const fehlende = importPlan.ordner.filter(name => !ordnerKarte.has(name.toLowerCase()))
+    let neueOrdner: FolderRow[] = []
+    if (fehlende.length > 0) {
+      const startPosition = folders.reduce((max, f) => Math.max(max, f.position), -1) + 1
+      const { data, error: ordnerFehler } = await supabase
+        .from('project_folders')
+        .insert(fehlende.map((name, i) => ({
+          project_id: project.id,
+          name,
+          position: startPosition + i,
+          created_by: userId,
+        })))
+        .select('id, project_id, name, position')
+      if (ordnerFehler || !data) {
+        setImportLaeuft(false)
+        setImportFehler(txt('Die Ordner konnten nicht angelegt werden — es wurde nichts importiert.'))
+        return
+      }
+      neueOrdner = data as FolderRow[]
+      for (const f of neueOrdner) ordnerKarte.set(f.name.toLowerCase(), f.id)
+    }
+
+    // 2. Aufgaben. Die IDs entstehen hier, damit die Unter-Aufgaben
+    //    ihre Mutter kennen, ohne dass wir die Rückgabe der Reihe
+    //    nach zuordnen müssten — PostgREST garantiert die Reihenfolge
+    //    nicht.
+    const muetter = importPlan.aufgaben.map(a => ({
+      id: crypto.randomUUID(),
+      aufgabe: a,
+    }))
+    const zeileVon = (a: typeof importPlan.aufgaben[number], id: string, parent: string | null) => ({
+      id,
+      project_id: project.id,
+      titel: a.titel,
+      beschreibung: a.beschreibung,
+      assignee_id: a.zustaendigId,
+      due_date: a.faellig ?? importErsatzDatum,
+      // Unter-Aufgaben erben den Ordner ihrer Mutter (DB-Trigger)
+      folder_id: parent ? null : (a.ordner ? ordnerKarte.get(a.ordner.toLowerCase()) ?? null : null),
+      parent_task_id: parent,
+      created_by: userId,
+    })
+
+    const { error: mutterFehler } = await supabase
+      .from('tasks')
+      .insert(muetter.map(m => zeileVon(m.aufgabe, m.id, null)))
+    if (mutterFehler) {
+      setImportLaeuft(false)
+      setImportFehler(txt('Die Aufgaben konnten nicht angelegt werden: {0}', mutterFehler.message))
+      return
+    }
+
+    const kinder = muetter.flatMap(m =>
+      m.aufgabe.unterAufgaben.map(k => zeileVon(k, crypto.randomUUID(), m.id))
+    )
+    if (kinder.length > 0) {
+      const { error: kindFehler } = await supabase.from('tasks').insert(kinder)
+      if (kindFehler) {
+        setImportLaeuft(false)
+        setImportFehler(txt('Die Aufgaben sind angelegt, die Unter-Aufgaben nicht: {0}', kindFehler.message))
+        return
+      }
+    }
+
+    // 3. Frisch laden statt den lokalen Stand nachzubauen — nach einem
+    //    Import mit Ordnern, Unter-Aufgaben und Triggern ist die
+    //    Datenbank die verlässlichere Quelle
+    const { data: neueTasks } = await supabase
+      .from('tasks')
+      .select('*, assignee:profiles!tasks_assignee_id_fkey(id, full_name, email), notes:task_notes(count), tags:task_tag_zuordnungen(tag:task_tags(id, name, farbe))')
+      .eq('project_id', project.id)
+      .order('due_date', { ascending: true })
+
+    setImportLaeuft(false)
+    if (neueOrdner.length > 0) setFolders(prev => [...prev, ...neueOrdner])
+    if (neueTasks) setTasks(neueTasks as unknown as TaskRow[])
+    setImportModalOpen(false)
+    setTab('offen')
+  }
+
   // Ersteller des geöffneten Tasks — er wird wie der Verantwortliche bei
   // jeder Notiz informiert (nur einmal anzeigen, wenn beides dieselbe Person ist)
   const detailErsteller = detailTask && detailTask.created_by && detailTask.created_by !== detailTask.assignee_id
@@ -976,6 +1120,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               onClick={() => { setTagError(''); setEditTagId(null); setNeuerTagName(''); setTagModalOpen(true) }}
             >
               <Tags size={14} /> Tags ({tags.length})
+            </Button>
+          )}
+          {darfTasksBearbeiten && (
+            <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5" onClick={oeffneImport}>
+              <FileUp size={14} /> {txt('Import')}
             </Button>
           )}
           {darfTasksBearbeiten && (
@@ -1983,6 +2132,118 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           ))}
           {profiles.filter(p => !members.some(m => m.profile_id === p.id)).length === 0 && (
             <p className="px-3 py-2 text-sm text-gray-400">{txt('Alle berechtigten Personen sind bereits Mitglied.')}</p>
+          )}
+        </div>
+      </Modal>
+
+      {/* Aufgaben aus einer CSV-Datei übernehmen. Zwei Schritte mit
+          Absicht: erst zeigen, was entstehen würde, dann schreiben —
+          ein Import lässt sich nicht mit einem Klick rückgängig
+          machen. */}
+      <Modal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        title={txt('Aufgaben importieren')}
+        size="lg"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setImportModalOpen(false)}>{txt('Abbrechen')}</Button>
+            <Button onClick={handleImportAusfuehren} loading={importLaeuft} disabled={!importPlan}>
+              {importPlan
+                ? txt(importPlan.anzahl === 1 ? '{0} Aufgabe importieren' : '{0} Aufgaben importieren', importPlan.anzahl)
+                : txt('Importieren')}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {importFehler && <p className="text-sm text-red-600">{importFehler}</p>}
+
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-gray-700">{txt('CSV-Datei')}</label>
+            <input
+              ref={importDateiRef}
+              type="file"
+              accept=".csv,text/csv"
+              onChange={e => handleImportDatei(e.target.files?.[0] ?? null)}
+              className="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border file:border-gray-300 file:text-sm file:bg-white hover:file:bg-gray-50"
+            />
+            <p className="text-xs text-gray-500">
+              {txt('Erwartet wird eine Todoist-Projektvorlage: dort im Projektmenü «Als Vorlage exportieren → CSV». Sektionen werden zu Ordnern, eingerückte Aufgaben zu Unter-Aufgaben.')}
+            </p>
+          </div>
+
+          {importPlan && (
+            <>
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+                <div className="font-medium text-gray-800 mb-1">{importDatei}</div>
+                <ul className="list-disc list-inside space-y-0.5">
+                  <li>{txt(importPlan.aufgaben.length === 1 ? '{0} Aufgabe' : '{0} Aufgaben', importPlan.aufgaben.length)}
+                    {importPlan.anzahlUnterAufgaben > 0 && `, ${txt(importPlan.anzahlUnterAufgaben === 1 ? '{0} Unter-Aufgabe' : '{0} Unter-Aufgaben', importPlan.anzahlUnterAufgaben)}`}</li>
+                  {importPlan.ordner.length > 0 && (
+                    <li>{txt('Ordner')}: {importPlan.ordner.join(', ')}</li>
+                  )}
+                  {importPlan.ohneDatum > 0 && (
+                    <li>{txt('{0} ohne Datum in der Datei', importPlan.ohneDatum)}</li>
+                  )}
+                </ul>
+              </div>
+
+              {importPlan.warnungen.length > 0 && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
+                  {importPlan.warnungen.map((w, i) => <p key={i}>{w}</p>)}
+                </div>
+              )}
+
+              {importPlan.ohneDatum > 0 && (
+                <Input
+                  label={txt('Fälligkeit für Aufgaben ohne Datum *')}
+                  className="text-base sm:text-sm"
+                  type="date"
+                  value={importErsatzDatum}
+                  onChange={e => setImportErsatzDatum(e.target.value)}
+                />
+              )}
+
+              {/* Vorschau: die ersten Aufgaben so, wie sie entstehen */}
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">{txt('Vorschau')}</label>
+                <div className="border border-gray-200 rounded-md max-h-64 overflow-y-auto divide-y divide-gray-100">
+                  {importPlan.aufgaben.slice(0, 15).map((a, i) => (
+                    <div key={i} className="px-3 py-2 text-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="text-gray-800">{a.titel}</span>
+                        <span className="text-xs text-gray-500 shrink-0">
+                          {formatDate(a.faellig ?? importErsatzDatum)}
+                          {!a.faellig && ' *'}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3">
+                        {a.ordner && <span className="inline-flex items-center gap-1"><Folder size={11} />{a.ordner}</span>}
+                        <span>
+                          {a.zustaendigId
+                            ? memberOptions.find(m => m.id === a.zustaendigId)?.full_name
+                            : txt('Nicht zugewiesen')}
+                        </span>
+                        {a.unterAufgaben.length > 0 && (
+                          <span>{txt(a.unterAufgaben.length === 1 ? '{0} Unter-Aufgabe' : '{0} Unter-Aufgaben', a.unterAufgaben.length)}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {importPlan.aufgaben.length > 15 && (
+                  <p className="text-xs text-gray-500">{txt('… und {0} weitere.', importPlan.aufgaben.length - 15)}</p>
+                )}
+                {importPlan.ohneDatum > 0 && (
+                  <p className="text-xs text-gray-500">{txt('* Ersatzfälligkeit, in der Datei stand kein Datum.')}</p>
+                )}
+              </div>
+
+              <p className="text-xs text-gray-500">
+                {txt('Der Import verschickt keine E-Mails — bei mehreren Aufgaben wäre das eine Lawine. Zuständige erfahren davon erst bei der nächsten Änderung.')}
+              </p>
+            </>
           )}
         </div>
       </Modal>

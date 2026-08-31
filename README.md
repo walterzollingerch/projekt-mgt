@@ -116,6 +116,28 @@ Angelegt wird es an drei Stellen: einmalig bei der Migration für alle Berechtig
 
 Die Spalte `persoenlich_fuer` muss eine Seite dagegen **nicht** mitladen. Die Oberfläche erkennt das persönliche Projekt auch an der fehlenden Firma — die beiden Kennzeichen sind dank des CHECK gleichwertig. Wer nur einzelne Spalten auswählt statt `*`, bekommt trotzdem die richtige Darstellung: eigener Block zuoberst statt einer Gruppe «Ohne Firma» mitten in der Liste.
 
+## Aufgaben importieren
+
+Die Projektansicht kann Aufgaben aus einer **CSV-Datei im Format der Todoist-Projektvorlage** übernehmen (dort: Projektmenü → «Als Vorlage exportieren → CSV»). Den Export gibt es in Todoist, den Import hier. Abgebildet wird:
+
+| Todoist | Projekt-Mgt |
+|---|---|
+| `section` | Ordner (bestehende gleichen Namens werden weiterbenutzt) |
+| `task`, `INDENT 1` / `INDENT 2` | Aufgabe / Unter-Aufgabe |
+| `CONTENT`, `DESCRIPTION` | Titel, Beschreibung |
+| `RESPONSIBLE` | Zuständige Person |
+| `DATE`, ersatzweise `DEADLINE` | Fälligkeit |
+
+`PRIORITY`, `DURATION` und die Sprach-/Zeitzonenspalten fallen weg — dafür gibt es keine Entsprechung, und etwas zu erfinden wäre schlimmer als es wegzulassen. Wiederholungen wandern bewusst nicht mit: Todoists Regeln sind reichhaltiger als unsere drei, und eine falsch geratene Wiederholung erzeugt auf Dauer falsche Aufgaben.
+
+Drei Stellen gehen nicht glatt auf, deshalb ist dem Schreiben eine **Vorschau** vorgeschaltet:
+
+- **Fälligkeit ist bei uns Pflicht**, in Todoist nicht. Aufgaben ohne lesbares Datum bekommen eine Ersatzfälligkeit, die im Dialog gewählt wird.
+- **`RESPONSIBLE` enthält Todoist-Namen** («Beat (379540)»). Gesucht wird der Reihe nach E-Mail, vollständiger Name, einzelnes Namensteil — und nur, wenn das eindeutig auf ein Projektmitglied passt. Sonst entsteht die Aufgabe ohne Zuständige; die Vorschau nennt die Namen.
+- **Keine E-Mails.** Der Import schreibt direkt in die Datenbank statt über die Fachlogik: Fünfzig Aufgaben wären sonst fünfzig Zuweisungs-Mails. Zugriff und Regeln bleiben unverändert, RLS und Trigger prüfen jede Zeile.
+
+Das Lesen der Datei steht in `src/logik/csvImport.ts` — frei von Datenbank und Netz, damit es sich ohne laufende App prüfen lässt.
+
 ## Rechte
 
 Die RLS-Policies in `sql/` sind in beiden Datenbanken identisch. Sie lesen `profiles.role = 'admin'`, `can_use_projects` und `can_manage_projects`.
