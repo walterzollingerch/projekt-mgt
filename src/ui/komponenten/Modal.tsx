@@ -40,8 +40,13 @@ export default function Modal({ open, onClose, title, children, size = 'md', foo
 
   return (
     <div
+      // z-[1200] statt Tailwinds z-50: die Gastgeber-Apps stapeln ihr
+      // eigenes Chrome nicht in Tailwind-Schritten, sondern in Tausendern
+      // — Terramays untere Navigationsleiste liegt auf 1000 und deckte
+      // sonst auf dem Handy die Schaltflächen des Bottom-Sheets zu.
+      // Ein Modal gehört über alles andere, deshalb hier bewusst hoch.
       ref={overlayRef}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-[1200] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-sm"
       onClick={(e) => { if (e.target === overlayRef.current) onClose() }}
     >
       {/* Mobile: Bottom-Sheet, Desktop: zentriertes Modal */}
