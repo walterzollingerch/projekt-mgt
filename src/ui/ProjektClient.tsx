@@ -28,12 +28,30 @@ interface MemberRow {
 
 interface ProjectRow {
   id: string
-  company_id: string
+  /* null beim persönlichen Projekt — es gehört zu keiner Firma */
+  company_id: string | null
   name: string
   beschreibung: string | null
   status: 'aktiv' | 'archiviert'
+  /* Gesetzt = persönliches Projekt «Eigene Tasks» dieser Person.
+     Optional, weil eine Seite die Spalte vielleicht nicht mitlädt —
+     erkannt wird das Projekt dann an der fehlenden Firma. */
+  persoenlich_fuer?: string | null
   company: { id: string; name: string } | null
   members: MemberRow[]
+}
+
+/**
+ * Ist das das persönliche Projekt «Eigene Tasks»?
+ *
+ * Zwei Kennzeichen, weil das erste fehlen kann: `persoenlich_fuer`
+ * lädt nur, wer die Spalte auswählt. Die fehlende Firma ist dagegen
+ * gleichwertig und immer da — der CHECK `projects_firma_oder_persoenlich`
+ * lässt genau eine der beiden Spalten gesetzt sein. Sichtbar ist ein
+ * persönliches Projekt ohnehin nur seiner eigenen Person.
+ */
+function istPersoenlich(p: { company_id: string | null; persoenlich_fuer?: string | null }): boolean {
+  return !!p.persoenlich_fuer || !p.company_id
 }
 
 interface FolderRow {
@@ -94,6 +112,9 @@ interface MoveProjekt {
   name: string
   company_id: string | null
   company_name: string | null
+  /* Gesetzt = persönliches Projekt. Optional — ohne die Spalte
+     erkennt istPersoenlich() es an der fehlenden Firma. */
+  persoenlich_fuer?: string | null
 }
 
 interface ProjektClientProps {
@@ -322,6 +343,14 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
   const istMitglied = members.some(m => m.profile_id === userId)
   const darfTasksBearbeiten = isManager || istMitglied
+
+  // Das persönliche Projekt «Eigene Tasks»: keine Firma, genau ein
+  // Mitglied, alles mir zugewiesen. Es wird nicht verwaltet — weder
+  // umbenannt noch archiviert, und Mitglieder oder Tags gibt es dort
+  // nicht (sql/modul/09). Die Verwaltungsknöpfe entfallen deshalb,
+  // auch für Projektverwalter.
+  const istEigenesProjekt = istPersoenlich(project)
+  const darfVerwalten = isManager && !istEigenesProjekt
 
   // --- Task anlegen ---
   const handleCreateTask = async () => {
@@ -912,16 +941,19 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-bold text-[#1a5276] break-words">{project.name}</h1>
+            <h1 className="text-xl sm:text-2xl font-bold text-[#1a5276] break-words">
+              {istEigenesProjekt ? txt('Eigene Tasks') : project.name}
+            </h1>
             {project.status === 'archiviert' && <Badge variant="default">{txt('Archiviert')}</Badge>}
           </div>
           <p className="text-sm text-gray-500 mt-1">
-            {project.company?.name}
-            {project.beschreibung ? ` — ${project.beschreibung}` : ''}
+            {istEigenesProjekt
+              ? txt('Nur für dich sichtbar — alles hier ist dir zugewiesen.')
+              : `${project.company?.name ?? ''}${project.beschreibung ? ` — ${project.beschreibung}` : ''}`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-          {isManager && (
+          {darfVerwalten && (
             <>
               <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5" onClick={() => { setProjectForm({ name: project.name, beschreibung: project.beschreibung ?? '' }); setError(''); setProjectModalOpen(true) }}>
                 <Pencil size={14} /> Bearbeiten
@@ -936,7 +968,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               <FolderTree size={14} /> Ordner ({folders.length})
             </Button>
           )}
-          {isManager && (
+          {darfVerwalten && (
             <Button
               variant="outline"
               size="sm"
@@ -954,7 +986,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         </div>
       </div>
 
-      {!isManager && (
+      {!isManager && !istEigenesProjekt && (
         <div className="flex flex-wrap items-center gap-1.5 mb-6 text-xs text-gray-500">
           <Users size={13} />
           {memberOptions.map(m => (
@@ -1153,14 +1185,20 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-gray-700">{txt('Zuständig')}</label>
-              <select
-                value={taskForm.assignee_id}
-                onChange={e => setTaskForm(f => ({ ...f, assignee_id: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
-              >
-                <option value="">{txt('Nicht zugewiesen')}</option>
-                {memberOptions.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-              </select>
+              {istEigenesProjekt ? (
+                <p className="px-3 py-2 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-md">
+                  {txt('Du selbst — im eigenen Projekt ist jede Aufgabe dir zugewiesen.')}
+                </p>
+              ) : (
+                <select
+                  value={taskForm.assignee_id}
+                  onChange={e => setTaskForm(f => ({ ...f, assignee_id: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
+                >
+                  <option value="">{txt('Nicht zugewiesen')}</option>
+                  {memberOptions.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+                </select>
+              )}
             </div>
             <Input
               label={txt('Fertigstellungsdatum *')}
@@ -1233,7 +1271,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         footer={
           detailTask ? (
             <>
-              {isManager && (
+              {/* Im eigenen Projekt gibt es keinen Verwalter, der
+                  aufräumen könnte — dort darf die Person selbst
+                  löschen (Policy tasks_delete_eigen) */}
+              {(isManager || istEigenesProjekt) && (
                 <Button variant="danger" onClick={handleDeleteTask} loading={loading} className="mr-auto">
                   <Trash2 size={14} /> Löschen
                 </Button>
@@ -1297,14 +1338,20 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1">
                     <label className="text-sm font-medium text-gray-700">{txt('Zuständig')}</label>
-                    <select
-                      value={detailForm.assignee_id}
-                      onChange={e => setDetailForm(f => ({ ...f, assignee_id: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
-                    >
-                      <option value="">{txt('Nicht zugewiesen')}</option>
-                      {memberOptions.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-                    </select>
+                    {istEigenesProjekt ? (
+                      <p className="px-3 py-2 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-md">
+                        {txt('Du selbst — im eigenen Projekt ist jede Aufgabe dir zugewiesen.')}
+                      </p>
+                    ) : (
+                      <select
+                        value={detailForm.assignee_id}
+                        onChange={e => setDetailForm(f => ({ ...f, assignee_id: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
+                      >
+                        <option value="">{txt('Nicht zugewiesen')}</option>
+                        {memberOptions.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+                      </select>
+                    )}
                   </div>
                   <Input
                     label={txt('Fertigstellungsdatum *')}
@@ -1375,7 +1422,9 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       })}
                     </div>
                     {detailFirmenwechsel
-                      ? <p className="text-xs text-amber-700">Tags gelten pro Firma — beim Wechsel zu «{detailZielProjekt?.company_name}» fallen sie weg.</p>
+                      ? detailZielProjekt?.company_name
+                        ? <p className="text-xs text-amber-700">Tags gelten pro Firma — beim Wechsel zu «{detailZielProjekt.company_name}» fallen sie weg.</p>
+                        : <p className="text-xs text-amber-700">{txt('Tags gelten pro Firma — im eigenen Projekt fallen sie weg.')}</p>
                       : <p className="text-xs text-gray-500">{txt('Mehrfachauswahl möglich. Tags gelten für alle Projekte von {0}.', project.company?.name ?? txt('dieser Firma'))}</p>}
                   </div>
                 )}
@@ -1391,14 +1440,19 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     >
                       {moveProjekte.map(p => (
                         <option key={p.id} value={p.id}>
-                          {p.company_name ? `${p.company_name} — ${p.name}` : p.name}
+                          {istPersoenlich(p)
+                            ? txt('Eigene Tasks')
+                            : p.company_name ? `${p.company_name} — ${p.name}` : p.name}
                         </option>
                       ))}
                     </select>
                     {detailForm.project_id !== detailTask.project_id ? (
                       <p className="text-xs text-amber-700">
                         {txt(detailKinder.length > 0 ? 'Beim Speichern wird die Aufgabe umgehängt — die Unter-Tasks ziehen mit.' : 'Beim Speichern wird die Aufgabe umgehängt.')}
-                        Der Zuständige muss im Zielprojekt Mitglied sein.
+                        {' '}
+                        {detailZielProjekt && istPersoenlich(detailZielProjekt)
+                          ? txt('Im eigenen Projekt fällt sie dir selbst zu.')
+                          : txt('Der Zuständige muss im Zielprojekt Mitglied sein.')}
                       </p>
                     ) : (
                       <p className="text-xs text-gray-500">{txt('Zum Umhängen ein anderes Projekt wählen (nur Projekte, in denen du Mitglied bist).')}</p>
@@ -1582,17 +1636,21 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                         <X size={14} />
                       </button>
                     )}
-                    <select
-                      value={informId}
-                      onChange={e => setInformId(e.target.value)}
-                      className="min-w-0 flex-1 sm:flex-none text-base sm:text-xs border border-gray-300 rounded-md px-2 py-2 sm:py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
-                      title={txt('Diese Person wird über die Notiz informiert und bleibt für künftige Notizen dieses Tasks gespeichert')}
-                    >
-                      <option value="">{txt('Person informieren …')}</option>
-                      {memberOptions
-                        .filter(m => m.id !== userId && m.id !== detailTask.assignee_id && m.id !== detailTask.created_by && !watchers.some(w => w.profile_id === m.id))
-                        .map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-                    </select>
+                    {/* Im eigenen Projekt gibt es niemanden zu
+                        informieren — die Auswahl entfällt */}
+                    {!istEigenesProjekt && (
+                      <select
+                        value={informId}
+                        onChange={e => setInformId(e.target.value)}
+                        className="min-w-0 flex-1 sm:flex-none text-base sm:text-xs border border-gray-300 rounded-md px-2 py-2 sm:py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
+                        title={txt('Diese Person wird über die Notiz informiert und bleibt für künftige Notizen dieses Tasks gespeichert')}
+                      >
+                        <option value="">{txt('Person informieren …')}</option>
+                        {memberOptions
+                          .filter(m => m.id !== userId && m.id !== detailTask.assignee_id && m.id !== detailTask.created_by && !watchers.some(w => w.profile_id === m.id))
+                          .map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+                      </select>
+                    )}
                     <Button size="sm" onClick={handleAddNote} loading={noteSaving} disabled={!noteText.trim()} className="w-full sm:w-auto py-2.5 sm:py-1.5 sm:ml-auto">
                       Anfügen
                     </Button>

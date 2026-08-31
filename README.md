@@ -13,7 +13,7 @@ Wer den Code in `node_modules/@tomtalent/projekt-mgt` bearbeitet, verliert die �
 ## Aufbau
 
 ```
-sql/modul/    Migrationen des Moduls in Reihenfolge (01…08). In jeder App
+sql/modul/    Migrationen des Moduls in Reihenfolge (01…09). In jeder App
               identisch — hier stehen die Tabellen, Trigger und Policies,
               die dem Projekt-Mgt gehören.
 sql/host/     Was die Gastgeber-App bereitstellen muss. Pro App eine
@@ -67,7 +67,7 @@ projektMgtKonfigurieren({
 **4. Datenbank.** In dieser Reihenfolge:
 
 1. `sql/host/<app>_01_voraussetzungen.sql`
-2. `sql/modul/01` bis `08` der Reihe nach
+2. `sql/modul/01` bis `09` der Reihe nach
 3. `sql/host/<app>_02_profilzugriff.sql`
 
 Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` und `shares_project_with()` aus `modul/01` benutzt. Stünde er in derselben Datei wie Schritt 1, würde ein Ausführen am Stück mit «function does not exist» abbrechen — eine Datei, die man nur teilweise ausführen darf, ist eine Falle.
@@ -98,6 +98,23 @@ Der Cast ist Absicht und steht genau an dieser einen Stelle: TypeScript kann die
 ## Sprache
 
 **Deutsch ist die führende Sprache und fest eingebaut.** Eine App überschreibt einzelne Beschriftungen über `texte` im Host-Adapter; fehlt ein Eintrag, bleibt der deutsche Text stehen. Eine unvollständige Übersetzung ist damit sichtbar, aber nie kaputt — und eine App kann in Betrieb gehen, bevor alles übersetzt ist.
+
+## Eigene Tasks
+
+Jede Person, die das Modul benutzen darf, hat ein persönliches Projekt **«Eigene Tasks»** — den Ort für Aufgaben, die niemanden sonst betreffen. Technisch ist es ein gewöhnliches Projekt mit gesetztem `projects.persoenlich_fuer`; deshalb erscheint es überall dort, wo Projekte ohnehin vorkommen (Übersicht, Fälligkeitsliste, Suche, MCP), ohne dass eine App dafür etwas tun müsste.
+
+Vier Regeln, alle in `sql/modul/09` erzwungen — nicht in der Oberfläche:
+
+- **Keine Firma.** `company_id` ist dort null (der CHECK `projects_firma_oder_persoenlich` lässt genau eine der beiden Spalten gesetzt sein). Eine Person ist nicht die Firma, für die sie arbeitet — und in Terramay gibt es die Zuordnung gar nicht. Folge: dort gibt es keine Tags, denn Tags gehören zur Firma.
+- **Ein Mitglied.** Jede Aufgabe darin ist dieser Person zugewiesen; ein Trigger setzt das, statt es abzulehnen. Wer eine Aufgabe dorthin umhängt, meint «das mache ich selbst».
+- **Privat.** Auch Administratoren sehen weder das Projekt noch seine Aufgaben, Notizen oder Anhänge. Jede Admin-Blankopolicy des Moduls ist um «ausser persönlichen Projekten» ergänzt.
+- **Nicht verwaltet.** Es wird nicht umbenannt, archiviert, gelöscht oder um Mitglieder ergänzt — auch von der Person selbst nicht. Es entsteht mit `persoenliches_projekt_anlegen()` und verschwindet mit dem Profil (`ON DELETE CASCADE`). Aufgaben darin darf die Person löschen; dafür gibt es keinen Verwalter.
+
+Angelegt wird es an drei Stellen: einmalig bei der Migration für alle Berechtigten, danach durch einen Trigger auf `profiles` für jede Person, die das Modul-Recht bekommt — und als Notnagel durch die Oberfläche selbst, die `persoenliches_projekt_sichern()` aufruft, wenn das eigene Projekt in der Liste fehlt.
+
+**Für die Apps heisst das:** `projects.company_id` kann jetzt null sein. Wo eine Seite daraus etwas ableitet — typischerweise `.eq('company_id', project.company_id)` beim Laden der Tags —, muss der Fall abgefangen werden; ein `eq` gegen null scheitert in PostgREST. Die Typprüfung der App zeigt nach dem Versionssprung genau diese Stellen an.
+
+Die Spalte `persoenlich_fuer` muss eine Seite dagegen **nicht** mitladen. Die Oberfläche erkennt das persönliche Projekt auch an der fehlenden Firma — die beiden Kennzeichen sind dank des CHECK gleichwertig. Wer nur einzelne Spalten auswählt statt `*`, bekommt trotzdem die richtige Darstellung: eigener Block zuoberst statt einer Gruppe «Ohne Firma» mitten in der Liste.
 
 ## Rechte
 

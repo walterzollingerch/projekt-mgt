@@ -17,6 +17,11 @@ import type { McpIdentitaet } from './auth'
 //
 // Wer über MCP arbeitet, sieht und darf damit genau das, was er
 // auch unter /aufgaben im Portal sieht und darf.
+//
+// Persönliche Projekte («Eigene Tasks», sql/modul/09) sind die eine
+// Stelle, an der auch ein Administrator nichts sieht. Der Guard
+// bildet das an drei Stellen ab: beim Sehen, beim Verwalten und bei
+// den Listen, die Admins sonst ungefiltert bekommen.
 // ============================================================
 
 export class ZugriffFehlt extends Error {}
@@ -49,8 +54,22 @@ async function istErsteller(supabase: Db, id: McpIdentitaet, projectId: string):
   return !!data
 }
 
+/** Wem gehört dieses Projekt persönlich (null = gewöhnliches Projekt) */
+async function persoenlichFuer(supabase: Db, projectId: string): Promise<string | null> {
+  const { data } = await supabase
+    .from('projects')
+    .select('persoenlich_fuer')
+    .eq('id', projectId)
+    .maybeSingle()
+  return data?.persoenlich_fuer ?? null
+}
+
 /** Darf dieses konkrete Projekt verwalten (Mitglieder, Umbenennen, Löschen) */
 export async function kannProjektVerwalten(supabase: Db, id: McpIdentitaet, projectId: string): Promise<boolean> {
+  // Ein persönliches Projekt verwaltet niemand — auch die Person
+  // selbst nicht: es wird weder umbenannt noch archiviert, gelöscht
+  // oder um Mitglieder ergänzt
+  if (await persoenlichFuer(supabase, projectId)) return false
   if (istAdmin(id)) return true
   if (!istProjektverwalter(id)) return false
   return (await istMitglied(supabase, id, projectId)) || (await istErsteller(supabase, id, projectId))
@@ -58,6 +77,8 @@ export async function kannProjektVerwalten(supabase: Db, id: McpIdentitaet, proj
 
 /** Darf das Projekt überhaupt sehen (lesen) */
 export async function kannProjektSehen(supabase: Db, id: McpIdentitaet, projectId: string): Promise<boolean> {
+  const eigner = await persoenlichFuer(supabase, projectId)
+  if (eigner) return eigner === id.profile.id
   if (istAdmin(id)) return true
   return (await istMitglied(supabase, id, projectId)) || (await istErsteller(supabase, id, projectId))
 }
@@ -75,6 +96,21 @@ export async function sichtbareProjektIds(supabase: Db, id: McpIdentitaet): Prom
   ])]
 }
 
+/**
+ * Die persönlichen Projekte ALLER ANDEREN. Gegenstück zum `null` von
+ * `sichtbareProjektIds`: wer alles sehen darf (Admin), sieht trotzdem
+ * nicht hier hinein. Für alle übrigen ist die Liste ohnehin schon
+ * eingeschränkt — dann bleibt diese hier leer.
+ */
+export async function fremdePersoenlicheProjektIds(supabase: Db, id: McpIdentitaet): Promise<string[]> {
+  if (!istAdmin(id)) return []
+  const { data } = await supabase
+    .from('projects')
+    .select('id, persoenlich_fuer')
+    .not('persoenlich_fuer', 'is', null)
+  return (data ?? []).filter(p => p.persoenlich_fuer !== id.profile.id).map(p => p.id)
+}
+
 // ---- Zusicherungen (werfen ZugriffFehlt) -------------------
 
 export async function verlangeProjektZugriff(supabase: Db, id: McpIdentitaet, projectId: string): Promise<void> {
@@ -83,8 +119,27 @@ export async function verlangeProjektZugriff(supabase: Db, id: McpIdentitaet, pr
 }
 
 export async function verlangeProjektVerwaltung(supabase: Db, id: McpIdentitaet, projectId: string): Promise<void> {
-  if (!(await kannProjektVerwalten(supabase, id, projectId)))
-    throw new ZugriffFehlt('Dafür brauchst du Verwaltungsrechte in diesem Projekt.')
+  if (await kannProjektVerwalten(supabase, id, projectId)) return
+  if (await persoenlichFuer(supabase, projectId))
+    throw new ZugriffFehlt(
+      'Das persönliche Projekt «Eigene Tasks» wird nicht verwaltet: es hat genau ein Mitglied, ' +
+      'behält seinen Namen und verschwindet erst mit dem Profil. Aufgaben darin kannst du normal führen.'
+    )
+  throw new ZugriffFehlt('Dafür brauchst du Verwaltungsrechte in diesem Projekt.')
+}
+
+/**
+ * Aufgaben löschen: sonst Sache der Projektverwaltung — im eigenen
+ * persönlichen Projekt die der Person selbst, denn dort gibt es
+ * keinen Verwalter (Policy `tasks_delete_eigen`).
+ */
+export async function verlangeTaskLoeschung(supabase: Db, id: McpIdentitaet, projectId: string): Promise<void> {
+  const eigner = await persoenlichFuer(supabase, projectId)
+  if (eigner) {
+    if (eigner === id.profile.id) return
+    throw new ZugriffFehlt('Kein Zugriff auf dieses Projekt — du bist dort nicht Mitglied.')
+  }
+  await verlangeProjektVerwaltung(supabase, id, projectId)
 }
 
 export function verlangeProjektverwalter(id: McpIdentitaet): void {
@@ -115,7 +170,9 @@ export async function sichtbareFirmenIds(supabase: Db, id: McpIdentitaet): Promi
   if (projektIds === null) return null
   if (projektIds.length === 0) return []
   const { data } = await supabase.from('projects').select('company_id').in('id', projektIds)
-  return [...new Set((data ?? []).map(p => p.company_id))]
+  // Das persönliche Projekt gehört zu keiner Firma — es bringt
+  // deshalb auch keine Tags mit
+  return [...new Set((data ?? []).map(p => p.company_id).filter((c): c is string => !!c))]
 }
 
 /** Tags dieser Firma sehen und an Aufgaben setzen */

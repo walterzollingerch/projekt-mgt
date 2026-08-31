@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, ClipboardList, Users, ChevronRight, Archive, Search, CalendarClock, MessageSquare, FolderOpen, Folder, Tags, X } from 'lucide-react'
+import { Plus, ClipboardList, Users, UserCircle, ChevronRight, Archive, Search, CalendarClock, MessageSquare, FolderOpen, Folder, Tags, X } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -21,13 +21,31 @@ interface ProfileOption {
 
 interface ProjectRow {
   id: string
-  company_id: string
+  /* null beim persönlichen Projekt — es gehört zu keiner Firma */
+  company_id: string | null
   name: string
   beschreibung: string | null
   status: 'aktiv' | 'archiviert'
+  /* Gesetzt = persönliches Projekt «Eigene Tasks» dieser Person.
+     Optional, weil eine Seite die Spalte vielleicht nicht mitlädt —
+     erkannt wird das Projekt dann an der fehlenden Firma. */
+  persoenlich_fuer?: string | null
   company: { id: string; name: string } | null
   members: { id: string; profile_id: string; profile: ProfileOption | null }[]
   tasks: { id: string; status: 'offen' | 'geschlossen' }[]
+}
+
+/**
+ * Ist das das persönliche Projekt «Eigene Tasks»?
+ *
+ * Zwei Kennzeichen, weil das erste fehlen kann: `persoenlich_fuer`
+ * lädt nur, wer die Spalte auswählt. Die fehlende Firma ist dagegen
+ * gleichwertig und immer da — der CHECK `projects_firma_oder_persoenlich`
+ * lässt genau eine der beiden Spalten gesetzt sein. Sichtbar ist ein
+ * persönliches Projekt ohnehin nur seiner eigenen Person.
+ */
+function istPersoenlich(p: { company_id: string | null; persoenlich_fuer?: string | null }): boolean {
+  return !!p.persoenlich_fuer || !p.company_id
 }
 
 interface TaskRow {
@@ -149,13 +167,54 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
 
   // Projekte, in denen ich Mitglied bin — nur dort kann ich Aufgaben
   // anlegen (Admins sehen zwar alle Projekte, die Auswahl bleibt aber
-  // bewusst auf die eigenen beschränkt)
+  // bewusst auf die eigenen beschränkt). Das eigene Projekt steht
+  // zuoberst.
   const meineProjekte = useMemo(
     () => projects
       .filter(p => p.status === 'aktiv' && p.members.some(m => m.profile_id === userId))
-      .sort((a, b) => a.name.localeCompare(b.name)),
+      .sort((a, b) =>
+        (istPersoenlich(a) ? 0 : 1) - (istPersoenlich(b) ? 0 : 1) || a.name.localeCompare(b.name)
+      ),
     [projects, userId]
   )
+
+  // Das persönliche Projekt: ein Ort für Aufgaben, die niemanden
+  // sonst betreffen. Es gehört keiner Firma, hat mich als einziges
+  // Mitglied, und alles darin ist mir zugewiesen (DB-Trigger).
+  const eigenesProjekt = useMemo(
+    () => projects.find(istPersoenlich) ?? null,
+    [projects]
+  )
+
+  // Es entsteht mit der Migration und wird für neue Personen
+  // nachgeführt (sql/modul/09). Fehlt es trotzdem — etwa weil das
+  // Profil älter ist als das Modul —, legt der Aufruf es an, statt
+  // einen leeren Platz zu zeigen.
+  useEffect(() => {
+    if (eigenesProjekt) return
+    let abgebrochen = false
+    void (async () => {
+      const { data: id, error } = await supabase.rpc('persoenliches_projekt_sichern')
+      if (error || !id || abgebrochen) return
+      const { data } = await supabase
+        .from('projects')
+        .select('id, company_id, name, beschreibung, status, persoenlich_fuer')
+        .eq('id', id)
+        .single()
+      if (!data || abgebrochen) return
+      setProjects(prev => prev.some(p => p.id === data.id) ? prev : [...prev, {
+        ...data,
+        company: null,
+        members: [{ id: `neu-${userId}`, profile_id: userId, profile: profiles.find(p => p.id === userId) ?? null }],
+        tasks: [],
+      }])
+    })()
+    return () => { abgebrochen = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Im Anlegen-Dialog ist das eigene Projekt gewählt
+  const taskFormIstEigen = !!taskForm.project_id && taskForm.project_id === eigenesProjekt?.id
 
   // Ordner des im Anlegen-Dialog gewählten Projekts
   const projektOrdner = useMemo(
@@ -244,10 +303,12 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     )
   }
 
-  // Nach Firma gruppieren, archivierte Projekte ans Ende
+  // Nach Firma gruppieren, archivierte Projekte ans Ende. Das
+  // persönliche Projekt steht separat darüber — es gehört zu keiner
+  // Firma und wäre unter «Ohne Firma» falsch einsortiert.
   const grouped = useMemo(() => {
     const map = new Map<string, { companyName: string; projects: ProjectRow[] }>()
-    const sorted = [...projects].sort((a, b) =>
+    const sorted = [...projects].filter(p => !istPersoenlich(p)).sort((a, b) =>
       a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'aktiv' ? -1 : 1
     )
     for (const p of sorted) {
@@ -388,7 +449,10 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     }
 
     const projekt = projects.find(p => p.id === taskForm.project_id)
-    const assignee = projekt?.members.find(m => m.profile_id === taskForm.assignee_id)?.profile ?? null
+    // Nicht nach der Eingabe suchen, sondern nach dem, was der Server
+    // gespeichert hat — im eigenen Projekt weist der DB-Trigger die
+    // Aufgabe der Person selbst zu
+    const assignee = projekt?.members.find(m => m.profile_id === result.task.assignee_id)?.profile ?? null
     setOffeneTasks(prev => [...prev, {
       id: result.task.id,
       titel: result.task.titel,
@@ -514,7 +578,37 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       {/* --- Projekte --- */}
       {tab === 'projekte' && (
         <>
-          {projects.length === 0 && (
+          {eigenesProjekt && (
+            <div className="mb-8">
+              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">{txt('Für mich')}</h2>
+              <Link
+                href={`${basisPfad}/${eigenesProjekt.id}`}
+                className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 hover:border-[#1a5276] transition-colors flex items-center justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <UserCircle size={16} className="text-[#1a5276] shrink-0" />
+                    <span className="font-semibold text-gray-800 truncate">{txt('Eigene Tasks')}</span>
+                  </div>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    {txt('Nur für dich sichtbar — alles hier ist dir zugewiesen.')}
+                  </p>
+                  <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
+                    <span>
+                      {txt(
+                        eigenesProjekt.tasks.filter(t => t.status === 'offen').length === 1
+                          ? '{0} offener Task'
+                          : '{0} offene Tasks',
+                        eigenesProjekt.tasks.filter(t => t.status === 'offen').length
+                      )}
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight size={18} className="text-gray-400 shrink-0" />
+              </Link>
+            </div>
+          )}
+          {grouped.length === 0 && (
             <div className="text-center py-16 text-gray-500">
               <ClipboardList size={40} className="mx-auto mb-3 text-gray-300" />
               {isManager
@@ -655,7 +749,9 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               <option value="">{txt('Bitte wählen …')}</option>
               {meineProjekte.map(p => (
                 <option key={p.id} value={p.id}>
-                  {p.company?.name ? `${p.company.name} — ${p.name}` : p.name}
+                  {istPersoenlich(p)
+                    ? txt('Eigene Tasks')
+                    : p.company?.name ? `${p.company.name} — ${p.name}` : p.name}
                 </option>
               ))}
             </select>
@@ -677,22 +773,33 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
             />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">{txt('Zuständig')}</label>
-              <select
-                value={taskForm.assignee_id}
-                onChange={e => setTaskForm(f => ({ ...f, assignee_id: e.target.value }))}
-                disabled={!taskForm.project_id}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276] disabled:bg-gray-50"
-              >
-                <option value="">{txt('Nicht zugewiesen')}</option>
-                {(projects.find(p => p.id === taskForm.project_id)?.members ?? [])
-                  .map(m => m.profile)
-                  .filter((p): p is ProfileOption => !!p)
-                  .sort((a, b) => a.full_name.localeCompare(b.full_name))
-                  .map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-              </select>
-            </div>
+            {/* Im eigenen Projekt gibt es nichts zu wählen — alles
+                dort gehört mir (der DB-Trigger setzt es ohnehin) */}
+            {taskFormIstEigen ? (
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">{txt('Zuständig')}</label>
+                <p className="px-3 py-2 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-md">
+                  {txt('Du selbst — im eigenen Projekt ist jede Aufgabe dir zugewiesen.')}
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">{txt('Zuständig')}</label>
+                <select
+                  value={taskForm.assignee_id}
+                  onChange={e => setTaskForm(f => ({ ...f, assignee_id: e.target.value }))}
+                  disabled={!taskForm.project_id}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276] disabled:bg-gray-50"
+                >
+                  <option value="">{txt('Nicht zugewiesen')}</option>
+                  {(projects.find(p => p.id === taskForm.project_id)?.members ?? [])
+                    .map(m => m.profile)
+                    .filter((p): p is ProfileOption => !!p)
+                    .sort((a, b) => a.full_name.localeCompare(b.full_name))
+                    .map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+                </select>
+              </div>
+            )}
             <Input
               label={txt('Fertigstellungsdatum *')}
               className="text-base sm:text-sm"

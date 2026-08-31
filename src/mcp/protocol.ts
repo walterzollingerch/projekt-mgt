@@ -22,6 +22,8 @@ const ANLEITUNG = `Dieser Server gibt Zugriff auf das Modul «Projekt-Mgt» des 
 
 Begriffe: Ein Projekt gehört zu einer Firma und hat Mitglieder. Aufgaben (Tasks) liegen in Projekten, haben immer ein Fälligkeitsdatum und höchstens eine zuständige Person — diese muss Mitglied des Projekts sein. Aufgaben können in Ordnern gruppiert werden und eine Ebene tief Unter-Aufgaben haben. «Schliessen» archiviert eine Aufgabe; gelöscht wird nur in Ausnahmefällen. Tags sind eine zweite, projektübergreifende Ordnung: sie gehören zur FIRMA, stehen in allen ihren Projekten bereit und eine Aufgabe kann beliebig viele tragen (list_tasks und search_tasks filtern danach).
 
+Eigene Tasks: Jede Person hat zusätzlich ein persönliches Projekt «Eigene Tasks» (in list_projects an «persoenlich: true» erkennbar). Es gehört zu keiner Firma, hat genau ein Mitglied und ist für alle anderen unsichtbar — auch für Administratoren. Aufgaben darin sind immer der Person selbst zugewiesen, tragen keine Tags und lösen keine E-Mails aus. Was nur die Person selbst betrifft, gehört dorthin und nicht in ein Firmenprojekt.
+
 Vorgehen: Beginne mit list_projects, um IDs zu bekommen. Alle Parameter, die auf «_id» enden, erwarten die UUID aus dem Portal, niemals einen Namen — schlage IDs bei Bedarf mit list_projects, list_people, list_tags oder search_tasks nach.
 
 Wichtig: Änderungen wirken sofort im Portal und lösen automatisch E-Mails an die betroffenen Personen aus (Zuweisung, Änderung, Schliessen, neue Notiz). Frage im Zweifel nach, bevor du schreibst.`

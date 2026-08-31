@@ -20,6 +20,7 @@ import {
 import type { McpIdentitaet } from './auth'
 import {
   ZugriffFehlt,
+  fremdePersoenlicheProjektIds,
   istAdmin,
   istProjektverwalter,
   ladeOrdnerMitZugriff,
@@ -30,6 +31,7 @@ import {
   verlangeProjektVerwaltung,
   verlangeProjektZugriff,
   verlangeProjektverwalter,
+  verlangeTaskLoeschung,
   verlangeTagPflege,
   verlangeTagSicht,
 } from './guard'
@@ -209,6 +211,17 @@ async function taskIdsMitTags(supabase: Db, tagIds: string[]): Promise<string[]>
 
 const TASK_FELDER = 'id, project_id, titel, beschreibung, assignee_id, due_date, status, wiederholung, parent_task_id, folder_id, closed_at'
 
+/**
+ * Wertliste für den PostgREST-Filter `not.in`. Wird für die
+ * persönlichen Projekte anderer gebraucht: Admins bekommen ihre
+ * Listen sonst ungefiltert, und dort haben sie nichts zu suchen.
+ * Bei leerer Liste liefert die Funktion null — `in.()` wäre
+ * ungültige Syntax, der Filter entfällt dann ganz.
+ */
+function nichtIn(ids: string[]): string | null {
+  return ids.length === 0 ? null : `(${ids.join(',')})`
+}
+
 // ---- Werkzeuge --------------------------------------------
 
 export const TOOLS: ToolDef[] = [
@@ -226,7 +239,9 @@ export const TOOLS: ToolDef[] = [
         zugang: identitaet.tokenName,
         ist_admin: istAdmin(identitaet),
         darf_projekte_verwalten: istProjektverwalter(identitaet),
-        sichtbare_projekte: sichtbar === null ? 'alle (Admin)' : sichtbar.length,
+        sichtbare_projekte: sichtbar === null
+          ? 'alle ausser den persönlichen Projekten anderer (Admin)'
+          : sichtbar.length,
       }
     },
   },
@@ -244,7 +259,7 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'list_projects',
-    beschreibung: 'Listet alle Projekte, die diese Person sehen darf — mit Firma, Status und der Anzahl offener bzw. überfälliger Aufgaben. Startpunkt für fast alles andere.',
+    beschreibung: 'Listet alle Projekte, die diese Person sehen darf — mit Firma, Status und der Anzahl offener bzw. überfälliger Aufgaben. Startpunkt für fast alles andere. Darunter ist das persönliche Projekt «Eigene Tasks» (persoenlich: true): der eigene Ort für Aufgaben, die niemanden sonst betreffen — ohne Firma, ohne weitere Mitglieder, für alle anderen unsichtbar.',
     schema: {
       type: 'object',
       properties: {
@@ -259,9 +274,14 @@ export const TOOLS: ToolDef[] = [
 
       let q = supabase
         .from('projects')
-        .select('id, name, beschreibung, status, company_id, created_at')
+        .select('id, name, beschreibung, status, company_id, persoenlich_fuer, created_at')
         .order('name')
       if (sichtbar !== null) q = q.in('id', sichtbar)
+      else {
+        // Admin: sieht alles ausser den persönlichen Projekten anderer
+        const versteckt = nichtIn(await fremdePersoenlicheProjektIds(supabase, identitaet))
+        if (versteckt) q = q.not('id', 'in', versteckt)
+      }
       if (args.mit_archivierten !== true) q = q.eq('status', 'aktiv')
 
       const { data: projekte, error } = await q
@@ -270,8 +290,11 @@ export const TOOLS: ToolDef[] = [
       if (liste.length === 0) return { projekte: [] }
 
       const ids = liste.map(p => p.id)
+      const firmenIds = [...new Set(liste.map(p => p.company_id).filter((c): c is string => !!c))]
       const [{ data: firmen }, { data: offeneTasks }] = await Promise.all([
-        supabase.from('companies').select('id, name').in('id', [...new Set(liste.map(p => p.company_id))]),
+        firmenIds.length
+          ? supabase.from('companies').select('id, name').in('id', firmenIds)
+          : Promise.resolve({ data: [] as { id: string; name: string }[] }),
         supabase.from('tasks').select('project_id, due_date').eq('status', 'offen').in('project_id', ids),
       ])
       const firmenName = new Map((firmen ?? []).map(f => [f.id, f.name]))
@@ -285,7 +308,9 @@ export const TOOLS: ToolDef[] = [
             name: p.name,
             beschreibung: p.beschreibung,
             status: p.status,
-            firma: { id: p.company_id, name: firmenName.get(p.company_id) ?? null },
+            // Das persönliche Projekt gehört zu keiner Firma
+            firma: p.company_id ? { id: p.company_id, name: firmenName.get(p.company_id) ?? null } : null,
+            persoenlich: !!p.persoenlich_fuer,
             offene_aufgaben: eigene.length,
             ueberfaellige_aufgaben: eigene.filter(t => t.due_date < stichtag).length,
           }
@@ -309,7 +334,7 @@ export const TOOLS: ToolDef[] = [
       await verlangeProjektZugriff(supabase, identitaet, projectId)
 
       const [{ data: projekt }, { data: mitglieder }, { data: ordner }, { data: tasks }] = await Promise.all([
-        supabase.from('projects').select('id, name, beschreibung, status, company_id, created_at').eq('id', projectId).single(),
+        supabase.from('projects').select('id, name, beschreibung, status, company_id, persoenlich_fuer, created_at').eq('id', projectId).single(),
         supabase
           .from('project_members')
           .select('profile:profiles!project_members_profile_id_fkey(id, full_name, email)')
@@ -319,7 +344,9 @@ export const TOOLS: ToolDef[] = [
       ])
       if (!projekt) throw new ToolFehler('Projekt nicht gefunden.')
 
-      const { data: firma } = await supabase.from('companies').select('id, name').eq('id', projekt.company_id).maybeSingle()
+      const { data: firma } = projekt.company_id
+        ? await supabase.from('companies').select('id, name').eq('id', projekt.company_id).maybeSingle()
+        : { data: null }
       const stichtag = heute()
       const offen = (tasks ?? []).filter(t => t.status === 'offen')
 
@@ -328,7 +355,8 @@ export const TOOLS: ToolDef[] = [
         name: projekt.name,
         beschreibung: projekt.beschreibung,
         status: projekt.status,
-        firma: firma ?? { id: projekt.company_id, name: null },
+        firma: projekt.company_id ? (firma ?? { id: projekt.company_id, name: null }) : null,
+        persoenlich: !!projekt.persoenlich_fuer,
         mitglieder: (mitglieder ?? [])
           .map(m => m.profile as unknown as { id: string; full_name: string; email: string } | null)
           .filter((p): p is { id: string; full_name: string; email: string } => !!p)
@@ -373,6 +401,9 @@ export const TOOLS: ToolDef[] = [
         if (sichtbar !== null) {
           if (sichtbar.length === 0) return { aufgaben: [], anzahl: 0 }
           q = q.in('project_id', sichtbar)
+        } else {
+          const versteckt = nichtIn(await fremdePersoenlicheProjektIds(supabase, identitaet))
+          if (versteckt) q = q.not('project_id', 'in', versteckt)
         }
       }
 
@@ -475,6 +506,11 @@ export const TOOLS: ToolDef[] = [
 
       const sichtbar = await sichtbareProjektIds(supabase, identitaet)
       if (sichtbar !== null && sichtbar.length === 0) return { aufgaben: [], anzahl: 0 }
+      // Admin (sichtbar === null): alles ausser den persönlichen
+      // Projekten anderer
+      const versteckt = sichtbar === null
+        ? nichtIn(await fremdePersoenlicheProjektIds(supabase, identitaet))
+        : null
       const limit = Math.min(typeof args.limit === 'number' && args.limit > 0 ? args.limit : 30, 100)
 
       // Tag-Filter: Treffer auf Aufgaben mit einem dieser Tags eingrenzen
@@ -490,6 +526,7 @@ export const TOOLS: ToolDef[] = [
         .select(TASK_FELDER)
         .or(`titel.ilike.%${begriff}%,beschreibung.ilike.%${begriff}%`)
       if (sichtbar !== null) direkt = direkt.in('project_id', sichtbar)
+      if (versteckt) direkt = direkt.not('project_id', 'in', versteckt)
       if (args.nur_offene === true) direkt = direkt.eq('status', 'offen')
       if (getaggt !== null) direkt = direkt.in('id', getaggt)
 
@@ -511,6 +548,7 @@ export const TOOLS: ToolDef[] = [
         if (offeneIds.length > 0) {
           let q = supabase.from('tasks').select(TASK_FELDER).in('id', offeneIds)
           if (sichtbar !== null) q = q.in('project_id', sichtbar)
+          if (versteckt) q = q.not('project_id', 'in', versteckt)
           if (args.nur_offene === true) q = q.eq('status', 'offen')
           const { data: weitere } = await q.limit(limit)
           for (const t of weitere ?? []) {
@@ -610,7 +648,7 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'create_task',
-    beschreibung: 'Legt eine neue Aufgabe in einem Projekt an. Fälligkeitsdatum ist Pflicht. Die zuständige Person muss Mitglied des Projekts sein und wird per E-Mail informiert. Mit parent_task_id entsteht eine Unter-Aufgabe (nur eine Ebene tief).',
+    beschreibung: 'Legt eine neue Aufgabe in einem Projekt an. Fälligkeitsdatum ist Pflicht. Die zuständige Person muss Mitglied des Projekts sein und wird per E-Mail informiert. Mit parent_task_id entsteht eine Unter-Aufgabe (nur eine Ebene tief). Im persönlichen Projekt «Eigene Tasks» ist jede Aufgabe der Person selbst zugewiesen — assignee_id wird dort ignoriert, Tags gibt es keine, und niemand wird benachrichtigt.',
     schema: {
       type: 'object',
       properties: {
@@ -740,7 +778,7 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'delete_task',
-    beschreibung: 'Löscht eine Aufgabe endgültig samt Notizen und Unter-Aufgaben. Nur für Projektverwalter. In der Regel ist close_task das Richtige — Geschlossenes bleibt im Archiv auffindbar.',
+    beschreibung: 'Löscht eine Aufgabe endgültig samt Notizen und Unter-Aufgaben. Nur für Projektverwalter — im persönlichen Projekt «Eigene Tasks» für die Person selbst. In der Regel ist close_task das Richtige — Geschlossenes bleibt im Archiv auffindbar.',
     schema: {
       type: 'object',
       properties: { task_id: { type: 'string' } },
@@ -751,7 +789,7 @@ export const TOOLS: ToolDef[] = [
     async handler({ supabase, identitaet }, args) {
       const taskId = uuid(args, 'task_id')
       const task = await ladeTaskMitZugriff(supabase, identitaet, taskId)
-      await verlangeProjektVerwaltung(supabase, identitaet, task.project_id)
+      await verlangeTaskLoeschung(supabase, identitaet, task.project_id)
       auspacken(await deleteTask(supabase, taskId))
       return { geloescht: { id: taskId, titel: task.titel } }
     },

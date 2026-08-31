@@ -517,6 +517,10 @@ async function pruefeTags(supabase: Db, projectId: string, tagIds: string[]): Pr
     .eq('id', projectId)
     .single()
   if (!projekt) return fail(400, 'Projekt nicht gefunden.')
+  // Das persönliche Projekt gehört zu keiner Firma — und Tags
+  // gehören zu genau einer
+  if (!projekt.company_id)
+    return fail(400, 'Tags gehören zu einer Firma — im persönlichen Projekt «Eigene Tasks» gibt es keine.')
 
   const { data: tags } = await supabase
     .from('task_tags')
@@ -798,7 +802,18 @@ export async function updateTask(supabase: Db, userId: string, id: string, input
       .eq('parent_task_id', id)
     kinder = kinderData ?? []
 
-    const betroffene = [...new Set(
+    // Zielprojekt ist ein persönliches: dort ist alles der Person
+    // selbst zugewiesen (DB-Trigger), die Mitgliederprüfung unten
+    // entfällt deshalb. Fremde persönliche Projekte sind tabu.
+    const { data: ziel } = await supabase
+      .from('projects')
+      .select('persoenlich_fuer')
+      .eq('id', zielProjekt)
+      .single()
+    if (ziel?.persoenlich_fuer && ziel.persoenlich_fuer !== userId)
+      return fail(403, 'In das persönliche Projekt einer anderen Person kann nichts umgehängt werden.')
+
+    const betroffene = ziel?.persoenlich_fuer ? [] : [...new Set(
       [('assignee_id' in payload ? payload.assignee_id : current.assignee_id), ...kinder.map(k => k.assignee_id)]
         .filter((a): a is string => !!a)
     )]

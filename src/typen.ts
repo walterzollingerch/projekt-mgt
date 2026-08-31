@@ -32,11 +32,15 @@ export interface ProjektMgtDatabase {
       }
 
       // ── diesem Modul gehörend ─────────────────────────────
+      // `company_id` ist null und `persoenlich_fuer` gesetzt beim
+      // persönlichen Projekt «Eigene Tasks» — es gehört zu einer
+      // Person, nicht zu einer Firma. Bei jedem anderen Projekt ist
+      // es genau umgekehrt (CHECK projects_firma_oder_persoenlich).
       projects: {
-        Row: { id: string; company_id: string; name: string; beschreibung: string | null; status: 'aktiv' | 'archiviert'; created_by: string | null; created_at: string; updated_at: string }
-        Insert: { id?: string; company_id: string; name: string; beschreibung?: string | null; status?: 'aktiv' | 'archiviert'; created_by?: string | null; created_at?: string; updated_at?: string }
-        Update: { id?: string; company_id?: string; name?: string; beschreibung?: string | null; status?: 'aktiv' | 'archiviert'; created_by?: string | null; updated_at?: string }
-        Relationships: [{ foreignKeyName: 'projects_company_id_fkey'; columns: ['company_id']; referencedRelation: 'companies'; referencedColumns: ['id'] }, { foreignKeyName: 'projects_created_by_fkey'; columns: ['created_by']; referencedRelation: 'profiles'; referencedColumns: ['id'] }]
+        Row: { id: string; company_id: string | null; name: string; beschreibung: string | null; status: 'aktiv' | 'archiviert'; persoenlich_fuer: string | null; created_by: string | null; created_at: string; updated_at: string }
+        Insert: { id?: string; company_id?: string | null; name: string; beschreibung?: string | null; status?: 'aktiv' | 'archiviert'; persoenlich_fuer?: string | null; created_by?: string | null; created_at?: string; updated_at?: string }
+        Update: { id?: string; company_id?: string | null; name?: string; beschreibung?: string | null; status?: 'aktiv' | 'archiviert'; created_by?: string | null; updated_at?: string }
+        Relationships: [{ foreignKeyName: 'projects_company_id_fkey'; columns: ['company_id']; referencedRelation: 'companies'; referencedColumns: ['id'] }, { foreignKeyName: 'projects_created_by_fkey'; columns: ['created_by']; referencedRelation: 'profiles'; referencedColumns: ['id'] }, { foreignKeyName: 'projects_persoenlich_fuer_fkey'; columns: ['persoenlich_fuer']; referencedRelation: 'profiles'; referencedColumns: ['id'] }]
       }
       project_members: {
         Row: { id: string; project_id: string; profile_id: string; added_by: string | null; created_at: string }
@@ -102,7 +106,14 @@ export interface ProjektMgtDatabase {
         Relationships: []
       }
     }
-    Functions: Record<string, never>
+    Functions: {
+      // Legt das persönliche Projekt der angemeldeten Person an,
+      // falls es fehlt, und liefert seine ID (sql/modul/09).
+      persoenliches_projekt_sichern: {
+        Args: Record<string, never>
+        Returns: string
+      }
+    }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
   }
