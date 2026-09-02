@@ -155,7 +155,7 @@ export async function createProject(supabase: Db, userId: string, input: CreateP
         supabase.from('mitarbeiter_verzeichnis').select('id, full_name, email').in('id', empfaengerIds),
         akteurVon(supabase, userId, 'Ein Projektverwalter'),
       ])
-      await Promise.all((empfaenger ?? []).map(p =>
+      await Promise.allSettled((empfaenger ?? []).map(p =>
         sendMemberAddedMail({
           to: p.email,
           empfaengerName: p.full_name,
@@ -969,7 +969,7 @@ export async function updateTask(supabase: Db, userId: string, id: string, input
       akteurVon(supabase, userId, 'Ein Teammitglied'),
     ])
     const empfaenger = (profile ?? []) as unknown as Empfaenger[]
-    await Promise.all(empfaenger.map(p =>
+    await Promise.allSettled(empfaenger.map(p =>
       sendTaskClosedMail({
         to: p.email,
         empfaengerName: p.full_name,
@@ -1156,8 +1156,10 @@ export async function addTaskNote(supabase: Db, userId: string, id: string, inpu
     }
 
     // Awaited — auf Vercel wird die Function nach der Response
-    // eingefroren; Fehler fängt die Mail-Funktion intern ab.
-    await Promise.all(empfaenger.map(p =>
+    // eingefroren. Fehler fängt die Mail-Funktion ab; allSettled sorgt
+    // zusätzlich dafür, dass ein einzelner Ausfall den Versand an die
+    // übrigen Empfänger nicht mitreisst.
+    await Promise.allSettled(empfaenger.map(p =>
       sendTaskNoteMail({
         to: p.email,
         empfaengerName: p.full_name,

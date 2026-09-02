@@ -32,7 +32,26 @@ interface PortalMailParams {
 // Versendet Benachrichtigungen für das Projekt-Mgt-Modul. Ohne
 // RESEND_API_KEY wird still übersprungen (der Workflow darf nicht
 // an fehlender Mail scheitern).
-async function sendProjektMgtMail({ to, empfaengerName, subject, intro, buttonLabel, buttonPath, attachments, antwortAn }: PortalMailParams): Promise<boolean> {
+//
+// Diese Hülle fängt ab, was der Versand werfen kann: Resend liefert
+// Fehler der API zwar als error-Objekt zurück, wirft aber bei
+// Netzwerkproblemen, Timeouts und Rate-Limits. Ein solcher Fehler darf
+// den Aufrufer nie erreichen — die Mail geht dem Schreibvorgang in der
+// Datenbank zeitlich nach, der Datensatz ist also längst gespeichert.
+// Käme der Fehler durch, meldete das Portal «Unerwarteter Fehler»,
+// obwohl gespeichert wurde; der Client (MCP-Agent oder UI) wiederholte
+// den Aufruf und erzeugte doppelte Aufgaben und doppelte Notizen —
+// Notizen sind unveränderlich und lassen sich nicht mehr entfernen.
+async function sendProjektMgtMail(params: PortalMailParams): Promise<boolean> {
+  try {
+    return await sendeUeberResend(params)
+  } catch (fehler) {
+    console.error('Projekt-Mgt-Mail fehlgeschlagen (Ausnahme):', fehler)
+    return false
+  }
+}
+
+async function sendeUeberResend({ to, empfaengerName, subject, intro, buttonLabel, buttonPath, attachments, antwortAn }: PortalMailParams): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
     // Ohne Key wird still übersprungen (der Workflow darf nicht an
