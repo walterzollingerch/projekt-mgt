@@ -797,13 +797,14 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'add_note',
-    beschreibung: 'Fügt einer Aufgabe eine Notiz hinzu. Notizen sind unveränderlich und bilden den chronologischen Verlauf. Die zuständige Person, der Ersteller der Aufgabe und alle Beobachter werden per E-Mail informiert; mit inform_profile_id kommt eine weitere Person dauerhaft als Beobachter dazu.',
+    beschreibung: 'Fügt einer Aufgabe eine Notiz hinzu. Notizen sind unveränderlich und bilden den chronologischen Verlauf. Die zuständige Person, der Ersteller der Aufgabe und alle Beobachter werden per E-Mail informiert; mit inform_profile_id kommt eine weitere Person dauerhaft als Beobachter dazu. Mit schliessen=true wird die Notiz zur Schlussnotiz: die Aufgabe wird gleich geschlossen und archiviert, und alle Beteiligten erhalten dafür eine einzige E-Mail statt zwei. Das ist close_task vorzuziehen, wenn die Notiz das Ergebnis der Aufgabe festhält.',
     schema: {
       type: 'object',
       properties: {
         task_id: { type: 'string' },
         text: { type: 'string', description: 'Höchstens 5000 Zeichen' },
         inform_profile_id: { type: 'string', description: 'Zusätzlich zu informierende Person (muss Projektmitglied sein)' },
+        schliessen: { type: 'boolean', description: 'Schlussnotiz: die Aufgabe gleich schliessen und archivieren. Offene Unter-Aufgaben müssen vorher geschlossen sein; bei wiederkehrenden Aufgaben entsteht automatisch die nächste.' },
       },
       required: ['task_id', 'text'],
       additionalProperties: false,
@@ -812,13 +813,27 @@ export const TOOLS: ToolDef[] = [
     async handler({ supabase, identitaet }, args) {
       const taskId = uuid(args, 'task_id')
       await ladeTaskMitZugriff(supabase, identitaet, taskId)
-      const { note, watcherFehler } = auspacken(await addTaskNote(supabase, identitaet.profile.id, taskId, {
-        text: args.text,
-        inform_profile_id: args.inform_profile_id,
-      }))
+      const { note, watcherFehler, task, folgeTask, abschlussFehler } =
+        auspacken(await addTaskNote(supabase, identitaet.profile.id, taskId, {
+          text: args.text,
+          inform_profile_id: args.inform_profile_id,
+          schliessen: args.schliessen,
+        }))
+      // Die Notiz ist gespeichert, auch wenn das Schliessen scheitert
+      // (z. B. offene Unter-Aufgaben) — sie ist unveränderlich. Der
+      // Grund geht als Hinweis mit, damit der Aufruf nicht als
+      // vollständig erledigt gilt.
+      const hinweise = [watcherFehler, abschlussFehler].filter((h): h is string => !!h)
+      const ausgabe = task
+        ? await tasksAusgeben(
+            supabase,
+            [task as unknown as RohTask, ...(folgeTask ? [folgeTask as unknown as RohTask] : [])]
+          )
+        : []
       return {
         notiz: { id: note.id, text: note.text, erfasst_am: note.created_at },
-        hinweis: watcherFehler ?? undefined,
+        ...(args.schliessen ? { geschlossen: ausgabe[0] ?? null, folge_aufgabe: ausgabe[1] ?? null } : {}),
+        hinweis: hinweise.length > 0 ? hinweise.join(' ') : undefined,
       }
     },
   },

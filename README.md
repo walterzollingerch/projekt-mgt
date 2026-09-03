@@ -120,6 +120,8 @@ Die Spalte `persoenlich_fuer` muss eine Seite dagegen **nicht** mitladen. Die Ob
 
 Die letzte Notiz einer Aufgabe erledigt sie meistens gleich mit. Im Notizfeld steht deshalb neben «Anfügen» ein zweiter Knopf **«Anfügen & schliessen»**: eine Aktion, ein Ergebnis — Notiz gespeichert, Aufgabe geschlossen und archiviert.
 
+Über MCP heisst dasselbe `add_note` mit `schliessen: true`. Die Werkzeugbeschreibung sagt ausdrücklich, dass das `close_task` vorzuziehen ist, wenn die Notiz das Ergebnis der Aufgabe festhält — sonst nimmt ein Modell zwei Aufrufe und löst zwei Mails aus.
+
 Technisch ist es dieselbe Route (`POST …/notizen`) mit `schliessen: true`. `addTaskNote` speichert die Notiz, ruft danach `updateTask` mit `action: 'schliessen'` auf und gibt den geschlossenen Task (bei einer Wiederholung zusätzlich den Folge-Task) in der Antwort mit zurück.
 
 Zwei Entscheidungen dahinter:
