@@ -700,7 +700,18 @@ export interface UpdateTaskInput {
 // Task bearbeiten, schliessen (= archivieren) oder reaktivieren.
 // Mails: neuer/bisheriger Verantwortlicher bei Zuweisungswechsel;
 // Verantwortlicher bei Änderungen an Titel, Fälligkeit oder Status.
-export async function updateTask(supabase: Db, userId: string, id: string, input: UpdateTaskInput) {
+//
+// `ohneAbschlussMail` unterdrückt allein die «Aufgabe geschlossen»-Mail.
+// Genutzt von `addTaskNote` bei einer Schlussnotiz: dort meldet die
+// Notiz-Mail den Abschluss gleich mit. Alle übrigen Mails (Folge-Task
+// einer Wiederholung, Zuweisungswechsel) laufen unverändert weiter.
+export async function updateTask(
+  supabase: Db,
+  userId: string,
+  id: string,
+  input: UpdateTaskInput,
+  optionen: { ohneAbschlussMail?: boolean } = {}
+) {
   // Bisherigen Stand laden (für Änderungs-Diff, Umhängen und Mails)
   const { data: current } = await supabase
     .from('tasks')
@@ -955,31 +966,33 @@ export async function updateTask(supabase: Db, userId: string, id: string, input
   // eingefroren, nicht awaitete Promises laufen sonst nie. Fehler
   // fängt die Mail-Funktion intern ab.
   if (wurdeGeschlossen) {
+    const akteur = await akteurVon(supabase, userId, 'Ein Teammitglied')
+
     // Nur Ersteller und Zuständige(r) werden informiert — wer selbst
-    // schliesst, erhält keine Mail
-    const empfaengerIds = [...new Set(
-      [task.created_by, task.assignee_id].filter(
-        (pid): pid is string => !!pid && pid !== userId
-      )
-    )]
-    const [{ data: profile }, akteur] = await Promise.all([
-      empfaengerIds.length > 0
-        ? supabase.from('mitarbeiter_verzeichnis').select('id, full_name, email').in('id', empfaengerIds)
-        : { data: [] },
-      akteurVon(supabase, userId, 'Ein Teammitglied'),
-    ])
-    const empfaenger = (profile ?? []) as unknown as Empfaenger[]
-    await Promise.allSettled(empfaenger.map(p =>
-      sendTaskClosedMail({
-        to: p.email,
-        empfaengerName: p.full_name,
-        taskTitel: task.titel,
-        projektName,
-        geschlossenVon: akteur.name,
-        antwortAn: akteur.email,
-        taskPath,
-      })
-    ))
+    // schliesst, erhält keine Mail. Bei einer Schlussnotiz entfällt
+    // diese Mail: dort meldet die Notiz-Mail den Abschluss mit.
+    if (!optionen.ohneAbschlussMail) {
+      const empfaengerIds = [...new Set(
+        [task.created_by, task.assignee_id].filter(
+          (pid): pid is string => !!pid && pid !== userId
+        )
+      )]
+      const { data: profile } = empfaengerIds.length > 0
+        ? await supabase.from('mitarbeiter_verzeichnis').select('id, full_name, email').in('id', empfaengerIds)
+        : { data: [] }
+      const empfaenger = (profile ?? []) as unknown as Empfaenger[]
+      await Promise.allSettled(empfaenger.map(p =>
+        sendTaskClosedMail({
+          to: p.email,
+          empfaengerName: p.full_name,
+          taskTitel: task.titel,
+          projektName,
+          geschlossenVon: akteur.name,
+          antwortAn: akteur.email,
+          taskPath,
+        })
+      ))
+    }
 
     // Folge-Task eines wiederkehrenden Tasks: Verantwortlichen
     // über die neue Aufgabe informieren
@@ -1064,14 +1077,19 @@ export interface AddNoteInput {
   file_path?: unknown
   file_name?: unknown
   inform_profile_id?: unknown
+  schliessen?: unknown
 }
 
 // Notiz anfügen (Notizen sind unveränderlich). Optional: Datei-Anhang
 // (bereits in den Storage hochgeladen) und eine zusätzlich zu
 // informierende Person — sie wird als Beobachter gespeichert und ab
 // sofort bei jeder neuen Notiz informiert.
+//
+// `schliessen: true` macht daraus eine Schlussnotiz: der Task wird
+// unmittelbar danach geschlossen und archiviert, und alle Beteiligten
+// erhalten eine einzige Mail, die Notiz und Abschluss zusammen meldet.
 export async function addTaskNote(supabase: Db, userId: string, id: string, input: AddNoteInput) {
-  const { text, file_path, file_name, inform_profile_id } = input
+  const { text, file_path, file_name, inform_profile_id, schliessen } = input
 
   if (!text || typeof text !== 'string' || !text.trim() || text.length > 5000)
     return fail(400, 'Ungültiger Notiztext.')
@@ -1081,6 +1099,8 @@ export async function addTaskNote(supabase: Db, userId: string, id: string, inpu
     return fail(400, 'Dateiname fehlt.')
   if (inform_profile_id && (typeof inform_profile_id !== 'string' || !UUID_RE.test(inform_profile_id)))
     return fail(400, 'Ungültige Person.')
+  if (schliessen !== undefined && schliessen !== null && typeof schliessen !== 'boolean')
+    return fail(400, 'Ungültiger Wert für «schliessen».')
 
   const { data: note, error } = await supabase
     .from('task_notes')
@@ -1110,6 +1130,25 @@ export async function addTaskNote(supabase: Db, userId: string, id: string, inpu
       watcherFehler = watcherError.message.includes('Mitglied')
         ? 'Die zu informierende Person muss Mitglied des Projekts sein.'
         : 'Person konnte nicht als Beobachter gespeichert werden.'
+    }
+  }
+
+  // Schlussnotiz: erst schliessen, dann die Mail — sie soll den
+  // Abschluss bereits melden können. Die «Aufgabe geschlossen»-Mail
+  // von updateTask entfällt deshalb (sonst zwei Mails für dieselbe
+  // Sache). Scheitert das Schliessen (z. B. offene Unter-Tasks), bleibt
+  // die Notiz gespeichert — Notizen sind unveränderlich — und der
+  // Grund geht als `abschlussFehler` zurück.
+  let geschlossenerTask: Record<string, unknown> | null = null
+  let folgeTask: Record<string, unknown> | null = null
+  let abschlussFehler: string | null = null
+  if (schliessen) {
+    const ergebnis = await updateTask(supabase, userId, id, { action: 'schliessen' }, { ohneAbschlussMail: true })
+    if (ergebnis.ok) {
+      geschlossenerTask = ergebnis.data.task as Record<string, unknown>
+      folgeTask = (ergebnis.data.folgeTask ?? null) as Record<string, unknown> | null
+    } else {
+      abschlussFehler = ergebnis.error
     }
   }
 
@@ -1170,9 +1209,10 @@ export async function addTaskNote(supabase: Db, userId: string, id: string, inpu
         antwortAn: akteur.email,
         taskPath: `${hostLesen().basisPfad}/${task.project_id}?task=${task.id}`,
         attachments,
+        abschluss: !!geschlossenerTask,
       })
     ))
   }
 
-  return done({ note, watcherFehler })
+  return done({ note, watcherFehler, task: geschlossenerTask, folgeTask, abschlussFehler })
 }

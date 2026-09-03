@@ -8,6 +8,9 @@ import { angemeldet, istAbbruch } from './helfer'
 // Optional: Datei-Anhang (bereits in den Storage hochgeladen) und
 // eine zusätzlich zu informierende Person — sie wird als Beobachter
 // gespeichert und ab sofort bei jeder neuen Notiz informiert.
+// Mit `schliessen: true` wird die Notiz zur Schlussnotiz: der Task
+// wird gleich geschlossen und archiviert, die Antwort enthält dann
+// den geschlossenen Task (und bei einer Wiederholung den Folge-Task).
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const a = await angemeldet()

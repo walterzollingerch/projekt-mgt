@@ -237,7 +237,9 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const [notes, setNotes] = useState<NoteRow[]>([])
   const [notesLoading, setNotesLoading] = useState(false)
   const [noteText, setNoteText] = useState('')
-  const [noteSaving, setNoteSaving] = useState(false)
+  // '' = nichts läuft; sonst steht drin, welcher der beiden Knöpfe
+  // gedrückt wurde — nur der zeigt den Ladekringel
+  const [noteSaving, setNoteSaving] = useState<'' | 'notiz' | 'abschluss'>('')
   const [noteFile, setNoteFile] = useState<File | null>(null)
   const [informId, setInformId] = useState('')
   const [watchers, setWatchers] = useState<WatcherRow[]>([])
@@ -495,10 +497,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   }
 
   // --- Notiz anfügen (optional mit Datei und zu informierender Person) ---
-  const handleAddNote = async () => {
+  // `mitAbschluss` macht daraus eine Schlussnotiz: der Server schliesst
+  // den Task gleich mit und verschickt dafür nur eine Mail.
+  const handleAddNote = async (mitAbschluss = false) => {
     if (!detailTask || !noteText.trim()) return
     setError('')
-    setNoteSaving(true)
+    setNoteSaving(mitAbschluss ? 'abschluss' : 'notiz')
 
     // Datei zuerst in den privaten Storage laden
     let filePath: string | null = null
@@ -509,7 +513,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         .upload(path, noteFile)
       if (uploadError) {
         setError(txt(txt('Datei konnte nicht hochgeladen werden.')))
-        setNoteSaving(false)
+        setNoteSaving('')
         return
       }
       filePath = path
@@ -523,10 +527,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         file_path: filePath,
         file_name: noteFile?.name ?? null,
         inform_profile_id: informId || null,
+        schliessen: mitAbschluss,
       }),
     })
     const result = await res.json()
-    setNoteSaving(false)
+    setNoteSaving('')
     if (res.ok) {
       setNotes(prev => [...prev, result.note])
       setNoteText('')
@@ -538,9 +543,21 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       }
       setInformId('')
       if (result.watcherFehler) setError(result.watcherFehler)
-      setTasks(prev => prev.map(t =>
-        t.id === detailTask.id ? { ...t, notes: [{ count: noteCount(t) + 1 }] } : t
-      ))
+      // Bei einer Schlussnotiz liefert die API den geschlossenen Task
+      // (und bei einer Wiederholung den Folge-Task) gleich mit —
+      // Notiz-Zähler beibehalten, den liefert sie nicht
+      setTasks(prev => {
+        const next = prev.map(t =>
+          t.id === detailTask.id
+            ? { ...(result.task ?? t), notes: [{ count: noteCount(t) + 1 }] }
+            : t
+        )
+        return result.folgeTask ? [...next, { ...result.folgeTask, notes: [{ count: 0 }] }] : next
+      })
+      // Konnte nicht geschlossen werden (z. B. noch offene Unter-Tasks):
+      // Notiz ist trotzdem gespeichert, das Fenster bleibt mit dem Grund offen
+      if (result.abschlussFehler) setError(result.abschlussFehler)
+      else if (result.task) setDetailTask(null)
     } else {
       setError(result.error || txt('Notiz konnte nicht gespeichert werden.'))
     }
@@ -1804,9 +1821,38 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                           .map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
                       </select>
                     )}
-                    <Button size="sm" onClick={handleAddNote} loading={noteSaving} disabled={!noteText.trim()} className="w-full sm:w-auto py-2.5 sm:py-1.5 sm:ml-auto">
-                      Anfügen
-                    </Button>
+                    {/* Auf dem Handy untereinander — wie in der
+                        Modal-Fusszeile steht die weitergehende
+                        Aktion zuletzt und damit unten */}
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto sm:ml-auto">
+                      <Button
+                        size="sm"
+                        onClick={() => handleAddNote(false)}
+                        loading={noteSaving === 'notiz'}
+                        disabled={!noteText.trim() || noteSaving !== ''}
+                        className="w-full sm:w-auto py-2.5 sm:py-1.5"
+                      >
+                        Anfügen
+                      </Button>
+                      {/* Schlussnotiz — der häufige Fall: die letzte
+                          Notiz erledigt die Aufgabe gleich mit. Eine
+                          einzige Mail meldet beides. */}
+                      {detailTask.status === 'offen' && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => handleAddNote(true)}
+                          loading={noteSaving === 'abschluss'}
+                          disabled={!noteText.trim() || noteSaving !== '' || detailOffeneKinder > 0}
+                          title={detailOffeneKinder > 0
+                            ? txt('Erst möglich, wenn alle Unter-Tasks geschlossen sind ({0} offen)', detailOffeneKinder)
+                            : txt('Notiz anfügen, alle Beteiligten informieren und die Aufgabe schliessen')}
+                          className="w-full sm:w-auto py-2.5 sm:py-1.5 whitespace-nowrap"
+                        >
+                          <CheckCircle2 size={14} />{txt('Anfügen & schliessen')}
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

@@ -170,13 +170,19 @@ export function sendTaskClosedMail({ to, empfaengerName, taskTitel, projektName,
   })
 }
 
-// Beobachter: neue Notiz im Task (Datei-Anhang wird mitversendet)
-export function sendTaskNoteMail({ to, empfaengerName, taskTitel, projektName, notizText, autor, taskPath, attachments, antwortAn }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; notizText: string; autor: string; taskPath: string; attachments?: MailAttachment[]; antwortAn?: string | null }): Promise<boolean> {
+// Beobachter: neue Notiz im Task (Datei-Anhang wird mitversendet).
+// Ist die Notiz eine Schlussnotiz, meldet dieselbe Mail zugleich den
+// Abschluss — sonst bekämen Ersteller und Zuständige(r) zwei Mails,
+// die dasselbe erzählen.
+export function sendTaskNoteMail({ to, empfaengerName, taskTitel, projektName, notizText, autor, taskPath, attachments, antwortAn, abschluss }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; notizText: string; autor: string; taskPath: string; attachments?: MailAttachment[]; antwortAn?: string | null; abschluss?: boolean }): Promise<boolean> {
+  const anhang = attachments && attachments.length > 0 ? `\n\nDatei im Anhang: ${attachments.map(a => a.filename).join(', ')}` : ''
   return sendProjektMgtMail({
     to,
     empfaengerName,
-    subject: `Neue Notiz: ${taskTitel}`,
-    intro: `${autor} hat der Aufgabe «${taskTitel}» im Projekt «${projektName}» eine Notiz angefügt:\n\n«${notizText}»${attachments && attachments.length > 0 ? `\n\nDatei im Anhang: ${attachments.map(a => a.filename).join(', ')}` : ''}`,
+    subject: abschluss ? `Aufgabe geschlossen: ${taskTitel}` : `Neue Notiz: ${taskTitel}`,
+    intro: abschluss
+      ? `${autor} hat die Aufgabe «${taskTitel}» im Projekt «${projektName}» mit einer Schlussnotiz geschlossen und archiviert:\n\n«${notizText}»${anhang}`
+      : `${autor} hat der Aufgabe «${taskTitel}» im Projekt «${projektName}» eine Notiz angefügt:\n\n«${notizText}»${anhang}`,
     buttonLabel: 'Aufgabe öffnen',
     buttonPath: taskPath,
     attachments,

@@ -116,6 +116,17 @@ Angelegt wird es an drei Stellen: einmalig bei der Migration für alle Berechtig
 
 Die Spalte `persoenlich_fuer` muss eine Seite dagegen **nicht** mitladen. Die Oberfläche erkennt das persönliche Projekt auch an der fehlenden Firma — die beiden Kennzeichen sind dank des CHECK gleichwertig. Wer nur einzelne Spalten auswählt statt `*`, bekommt trotzdem die richtige Darstellung: eigener Block zuoberst statt einer Gruppe «Ohne Firma» mitten in der Liste.
 
+## Schlussnotiz
+
+Die letzte Notiz einer Aufgabe erledigt sie meistens gleich mit. Im Notizfeld steht deshalb neben «Anfügen» ein zweiter Knopf **«Anfügen & schliessen»**: eine Aktion, ein Ergebnis — Notiz gespeichert, Aufgabe geschlossen und archiviert.
+
+Technisch ist es dieselbe Route (`POST …/notizen`) mit `schliessen: true`. `addTaskNote` speichert die Notiz, ruft danach `updateTask` mit `action: 'schliessen'` auf und gibt den geschlossenen Task (bei einer Wiederholung zusätzlich den Folge-Task) in der Antwort mit zurück.
+
+Zwei Entscheidungen dahinter:
+
+- **Eine Mail statt zwei.** Ersteller und Zuständige(r) bekämen sonst «Neue Notiz» und «Aufgabe geschlossen» direkt hintereinander, mit demselben Anlass. `updateTask` unterdrückt darum über `{ ohneAbschlussMail: true }` genau diese eine Mail, und die Notiz-Mail meldet den Abschluss stattdessen mit (`abschluss: true` in `sendTaskNoteMail`). Alle übrigen Mails laufen unverändert — insbesondere die Zuweisung des Folge-Tasks einer Wiederholung. Empfängerkreis ist der der Notiz, also inklusive Beobachter; das ist der weitere der beiden.
+- **Die Notiz bleibt, wenn das Schliessen scheitert.** Notizen sind unveränderlich, ein Rückzieher wäre gar nicht möglich. Der Grund — typischerweise noch offene Unter-Tasks — kommt als `abschlussFehler` zurück, das Fenster bleibt offen und zeigt ihn an. Die Oberfläche verhindert den Fall vorab: bei offenen Unter-Tasks ist der Knopf gesperrt, genau wie «Schliessen & archivieren» in der Fusszeile.
+
 ## Aufgaben importieren
 
 Die Projektansicht kann Aufgaben aus einer **CSV-Datei im Format der Todoist-Projektvorlage** übernehmen (dort: Projektmenü → «Als Vorlage exportieren → CSV»). Den Export gibt es in Todoist, den Import hier. Abgebildet wird:
