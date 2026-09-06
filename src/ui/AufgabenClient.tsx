@@ -165,6 +165,27 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
   // Tippen veraltete Resultate angezeigt werden
   const [trefferFuer, setTrefferFuer] = useState('')
 
+  // Rückkehr aus der Projektansicht: dieselbe Ansicht wiederherstellen,
+  // aus der der Task geöffnet wurde (Gegenstück zu `ansichtQuery`). Erst
+  // nach der Hydration, damit Server und Client dasselbe erste Bild
+  // rendern — wie der Deep-Link im ProjektClient.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search)
+    const gewuenschterTab = p.get('tab')
+    if (gewuenschterTab === 'projekte' || gewuenschterTab === 'faellig' || gewuenschterTab === 'suche') {
+      setTab(gewuenschterTab)
+    }
+    const filter = p.get('faellig')
+    if (filter && filter in labels) setFaelligFilter(filter as FaelligFilter)
+    if (p.get('meine') === '1') setNurMeine(true)
+    const begriff = p.get('q')
+    if (begriff) setSuche(begriff)
+    const tagIds = p.get('tags')?.split(',').filter(Boolean)
+    if (tagIds?.length) setFilterTags(new Set(tagIds))
+    if (p.get('tagmodus') === 'und') setTagModus('und')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Projekte, in denen ich Mitglied bin — nur dort kann ich Aufgaben
   // anlegen (Admins sehen zwar alle Projekte, die Auswahl bleibt aber
   // bewusst auf die eigenen beschränkt). Das eigene Projekt steht
@@ -339,6 +360,25 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       .sort((a, b) => a.due_date.localeCompare(b.due_date))
   }, [offeneTasks, faelligFilter, nurMeine, userId, passtZuTagFilter])
 
+  // Die aktuelle Ansicht als Query. Sie hängt an jedem Task-Link, damit
+  // die Projektseite nach «Zurück» und nach dem Schliessen wieder hierhin
+  // führt statt in die Projektliste. Leer für die unveränderte
+  // Projekt-Ansicht — dann bleibt es beim blossen Basispfad.
+  const ansichtQuery = useMemo(() => {
+    const p = new URLSearchParams()
+    if (tab !== 'projekte') p.set('tab', tab)
+    if (tab === 'faellig') {
+      if (faelligFilter !== 'woche') p.set('faellig', faelligFilter)
+      if (nurMeine) p.set('meine', '1')
+    }
+    if (tab === 'suche' && suche.trim()) p.set('q', suche)
+    if (filterTags.size > 0) {
+      p.set('tags', [...filterTags].join(','))
+      if (tagModus !== 'oder') p.set('tagmodus', tagModus)
+    }
+    return p.toString()
+  }, [tab, faelligFilter, nurMeine, suche, filterTags, tagModus])
+
   const gefilterteTreffer = treffer.filter(passtZuTagFilter)
 
   const sucheBegriff = sucheEscapen(suche)
@@ -481,7 +521,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     return (
       <Link
         key={task.id}
-        href={`${basisPfad}/${task.project_id}?task=${task.id}`}
+        href={`${basisPfad}/${task.project_id}?task=${task.id}${ansichtQuery ? `&zurueck=${encodeURIComponent(ansichtQuery)}` : ''}`}
         className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 hover:border-[#1a5276] transition-colors flex items-start sm:items-center justify-between gap-3"
       >
         <div className="min-w-0 flex-1">

@@ -1,5 +1,6 @@
 'use client'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp } from 'lucide-react'
 import Button from './komponenten/Button'
@@ -176,12 +177,17 @@ function istUeberfaellig(task: TaskRow): boolean {
 export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben', texte }: ProjektClientProps) {
   const txt = machT(texte)
   const supabase = createClient()
+  const router = useRouter()
   const [project, setProject] = useState(initialProject)
   const [members, setMembers] = useState(initialProject.members)
   const [tasks, setTasks] = useState(initialTasks)
   const [folders, setFolders] = useState(initialFolders)
   const [tags, setTags] = useState(initialTags)
   const [tab, setTab] = useState<'offen' | 'archiv'>('offen')
+  // Ansicht der Übersicht, aus der dieser Task geöffnet wurde (Query
+  // `zurueck`). Leer beim direkten Aufruf und bei Deep-Links aus Mails.
+  const [zurueckQuery, setZurueckQuery] = useState('')
+  const zurueckHref = zurueckQuery ? `${basisPfad}?${zurueckQuery}` : basisPfad
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -267,8 +273,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   }, [])
 
   // Deep-Link aus der Zuweisungs-Mail: /aufgaben/[id]?task=<taskId>
+  // `zurueck` kommt aus der Übersicht und beschreibt die Ansicht, aus der
+  // der Task geöffnet wurde (z. B. die überfälligen Tasks). Über
+  // URLSearchParams neu serialisiert — so landet nur Query im Link.
   useEffect(() => {
-    const taskId = new URLSearchParams(window.location.search).get('task')
+    const params = new URLSearchParams(window.location.search)
+    setZurueckQuery(new URLSearchParams(params.get('zurueck') ?? '').toString())
+    const taskId = params.get('task')
     if (!taskId) return
     const task = initialTasks.find(t => t.id === taskId)
     if (task) openDetail(task)
@@ -474,8 +485,19 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     setDetailTask(null)
   }
 
+  // Wer aus der Fällig- oder Suchansicht kam, will nach dem Schliessen
+  // dorthin zurück — nicht in den Ordner, in dem der Task lag. `replace`,
+  // weil die Projektseite mit dem eben geschlossenen Task kein sinnvolles
+  // Ziel für den Zurück-Knopf des Browsers mehr ist.
+  const zurueckWennAusUebersicht = () => {
+    if (zurueckQuery) router.replace(zurueckHref)
+  }
+
   const handleClose = async () => {
-    if (await patchTask({ action: 'schliessen' })) setDetailTask(null)
+    if (await patchTask({ action: 'schliessen' })) {
+      setDetailTask(null)
+      zurueckWennAusUebersicht()
+    }
   }
 
   const handleReactivate = async () => {
@@ -557,7 +579,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       // Konnte nicht geschlossen werden (z. B. noch offene Unter-Tasks):
       // Notiz ist trotzdem gespeichert, das Fenster bleibt mit dem Grund offen
       if (result.abschlussFehler) setError(result.abschlussFehler)
-      else if (result.task) setDetailTask(null)
+      else if (result.task) {
+        setDetailTask(null)
+        zurueckWennAusUebersicht()
+      }
     } else {
       setError(result.error || txt('Notiz konnte nicht gespeichert werden.'))
     }
@@ -1091,8 +1116,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 sm:py-8">
-      <Link href={basisPfad} className="inline-flex items-center gap-1 py-1 text-sm text-[#1a5276] hover:underline mb-4">
-        <ArrowLeft size={15} /> Alle Projekte
+      <Link href={zurueckHref} className="inline-flex items-center gap-1 py-1 text-sm text-[#1a5276] hover:underline mb-4">
+        <ArrowLeft size={15} /> {zurueckQuery ? txt('Zurück zur Übersicht') : 'Alle Projekte'}
       </Link>
 
       {moveHinweis && (
