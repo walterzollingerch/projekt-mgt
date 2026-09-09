@@ -138,6 +138,11 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
   const [offeneTasks, setOffeneTasks] = useState(initialOffeneTasks)
   const [tab, setTab] = useState<'projekte' | 'faellig' | 'suche'>('projekte')
 
+  // Archivierte Projekte sind erledigt und stehen normalerweise nur im
+  // Weg. Sie bleiben über den Schalter erreichbar — sonst käme man an
+  // ein archiviertes Projekt gar nicht mehr heran, um es zu reaktivieren.
+  const [zeigeArchivierte, setZeigeArchivierte] = useState(false)
+
   // Projekt anlegen
   const [projektModalOpen, setProjektModalOpen] = useState(false)
   const [projektForm, setProjektForm] = useState(emptyProjektForm)
@@ -324,14 +329,24 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     )
   }
 
-  // Nach Firma gruppieren, archivierte Projekte ans Ende. Das
+  // Archivierte Projekte, ohne das persönliche — es lässt sich nicht
+  // archivieren und wird ohnehin separat gezeigt.
+  const archivierteAnzahl = useMemo(
+    () => projects.filter(p => !istPersoenlich(p) && p.status === 'archiviert').length,
+    [projects]
+  )
+
+  // Nach Firma gruppieren, archivierte Projekte ans Ende — sie sind
+  // aber nur sichtbar, wenn sie ausdrücklich eingeblendet werden. Das
   // persönliche Projekt steht separat darüber — es gehört zu keiner
   // Firma und wäre unter «Ohne Firma» falsch einsortiert.
   const grouped = useMemo(() => {
     const map = new Map<string, { companyName: string; projects: ProjectRow[] }>()
-    const sorted = [...projects].filter(p => !istPersoenlich(p)).sort((a, b) =>
-      a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'aktiv' ? -1 : 1
-    )
+    const sorted = [...projects]
+      .filter(p => !istPersoenlich(p) && (zeigeArchivierte || p.status === 'aktiv'))
+      .sort((a, b) =>
+        a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'aktiv' ? -1 : 1
+      )
     for (const p of sorted) {
       const key = p.company?.id ?? 'ohne'
       const entry = map.get(key) ?? { companyName: p.company?.name ?? txt('Ohne Firma'), projects: [] }
@@ -339,16 +354,38 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       map.set(key, entry)
     }
     return [...map.values()].sort((a, b) => a.companyName.localeCompare(b.companyName))
-  }, [projects])
+  }, [projects, zeigeArchivierte])
+
+  // Der Zähler im Tab nennt, was die Liste tatsächlich zeigt —
+  // das persönliche Projekt eingerechnet, es steht ganz oben.
+  const sichtbareProjekteAnzahl = useMemo(
+    () => grouped.reduce((n, g) => n + g.projects.length, 0) + (eigenesProjekt ? 1 : 0),
+    [grouped, eigenesProjekt]
+  )
+
+  // Aufgaben aus archivierten Projekten stehen in «Fällig» nicht mehr
+  // an: das Projekt ist abgeschlossen, seine offenen Reste sollen die
+  // Liste nicht mehr belasten. Findet sich das Projekt nicht (etwa weil
+  // eine Seite die Projekte gar nicht mitlädt), bleibt die Aufgabe
+  // sichtbar — lieber eine zu viel als eine übersehene.
+  const archivierteProjektIds = useMemo(
+    () => new Set(projects.filter(p => p.status === 'archiviert').map(p => p.id)),
+    [projects]
+  )
+
+  const offeneTasksAktiv = useMemo(
+    () => offeneTasks.filter(t => !archivierteProjektIds.has(t.project_id)),
+    [offeneTasks, archivierteProjektIds]
+  )
 
   const ueberfaelligAnzahl = useMemo(
-    () => offeneTasks.filter(t => t.due_date < heuteISO()).length,
-    [offeneTasks]
+    () => offeneTasksAktiv.filter(t => t.due_date < heuteISO()).length,
+    [offeneTasksAktiv]
   )
 
   const faelligeTasks = useMemo(() => {
     const heute = heuteISO()
-    return offeneTasks
+    return offeneTasksAktiv
       .filter(t => {
         if (nurMeine && t.assignee_id !== userId) return false
         if (!passtZuTagFilter(t)) return false
@@ -358,7 +395,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
         return true
       })
       .sort((a, b) => a.due_date.localeCompare(b.due_date))
-  }, [offeneTasks, faelligFilter, nurMeine, userId, passtZuTagFilter])
+  }, [offeneTasksAktiv, faelligFilter, nurMeine, userId, passtZuTagFilter])
 
   // Die aktuelle Ansicht als Query. Sie hängt an jedem Task-Link, damit
   // die Projektseite nach «Zurück» und nach dem Schliessen wieder hierhin
@@ -602,7 +639,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       {/* Tabs — auf schmalen Displays horizontal scrollbar statt umbrechend */}
       <div className="flex items-center gap-1 border-b border-gray-200 mb-4 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto">
         {([
-          ['projekte', txt('Projekte ({0})', projects.length)],
+          ['projekte', txt('Projekte ({0})', sichtbareProjekteAnzahl)],
           ['faellig', `Fällig${ueberfaelligAnzahl > 0 ? ` (${ueberfaelligAnzahl} überfällig)` : ''}`],
           ['suche', txt('Suche')],
         ] as const).map(([key, label]) => (
@@ -652,9 +689,11 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
           {grouped.length === 0 && (
             <div className="text-center py-16 text-gray-500">
               <ClipboardList size={40} className="mx-auto mb-3 text-gray-300" />
-              {isManager
-                ? txt('Noch keine Projekte. Lege das erste Projekt an.')
-                : txt('Dir wurden noch keine Projekte zugewiesen.')}
+              {archivierteAnzahl > 0
+                ? txt('Keine aktiven Projekte.')
+                : isManager
+                  ? txt('Noch keine Projekte. Lege das erste Projekt an.')
+                  : txt('Dir wurden noch keine Projekte zugewiesen.')}
             </div>
           )}
           {grouped.map(group => (
@@ -694,6 +733,23 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               </div>
             </div>
           ))}
+          {archivierteAnzahl > 0 && (
+            <button
+              type="button"
+              onClick={() => setZeigeArchivierte(v => !v)}
+              className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+            >
+              <Archive size={13} />
+              {zeigeArchivierte
+                ? txt('Archivierte ausblenden')
+                : txt(
+                    archivierteAnzahl === 1
+                      ? '{0} archiviertes Projekt anzeigen'
+                      : '{0} archivierte Projekte anzeigen',
+                    archivierteAnzahl
+                  )}
+            </button>
+          )}
         </>
       )}
 
