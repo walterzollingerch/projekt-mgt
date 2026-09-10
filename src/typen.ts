@@ -90,6 +90,16 @@ export interface ProjektMgtDatabase {
         Update: { id?: string; profile_id?: string; name?: string; token_hash?: string; token_prefix?: string; last_used_at?: string | null; expires_at?: string | null; revoked_at?: string | null }
         Relationships: [{ foreignKeyName: 'mcp_tokens_profile_id_fkey'; columns: ['profile_id']; referencedRelation: 'profiles'; referencedColumns: ['id'] }, { foreignKeyName: 'mcp_tokens_created_by_fkey'; columns: ['created_by']; referencedRelation: 'profiles'; referencedColumns: ['id'] }]
       }
+      // Protokoll der Dokument-Screenings: welche Person hat wann
+      // welches Dokument in welche Aktionen übersetzt. Wird nur
+      // geschrieben, wenn tatsächlich ausgeführt wurde — eine
+      // Analyse allein ändert nichts und braucht keine Spur.
+      screening_laeufe: {
+        Row: { id: string; profile_id: string; project_id: string | null; datei_pfad: string | null; datei_name: string | null; mails_gesendet: boolean; aktionen: Json; ergebnis: Json; created_at: string }
+        Insert: { id?: string; profile_id: string; project_id?: string | null; datei_pfad?: string | null; datei_name?: string | null; mails_gesendet?: boolean; aktionen: Json; ergebnis: Json; created_at?: string }
+        Update: never
+        Relationships: [{ foreignKeyName: 'screening_laeufe_profile_id_fkey'; columns: ['profile_id']; referencedRelation: 'profiles'; referencedColumns: ['id'] }, { foreignKeyName: 'screening_laeufe_project_id_fkey'; columns: ['project_id']; referencedRelation: 'projects'; referencedColumns: ['id'] }]
+      }
       mcp_audit: {
         Row: { id: string; token_id: string | null; profile_id: string | null; tool: string; argumente: Json | null; erfolg: boolean; fehler: string | null; created_at: string }
         Insert: { id?: string; token_id?: string | null; profile_id?: string | null; tool: string; argumente?: Json | null; erfolg?: boolean; fehler?: string | null; created_at?: string }

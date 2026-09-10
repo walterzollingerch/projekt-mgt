@@ -8,6 +8,7 @@
 export * from './logik/service'
 export * from './logik/tags'
 export * from './logik/csvImport'
+export * from './logik/screening'
 export { antwort } from './logik/http'
 export type { Db, Result, ProjektMgtDatabase, Json } from './typen'
 export { alsProjektMgtClient } from './typen'

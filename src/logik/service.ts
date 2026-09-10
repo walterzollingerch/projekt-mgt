@@ -597,9 +597,27 @@ export interface CreateTaskInput {
   tag_ids?: unknown
 }
 
+/**
+ * Unterdrückt die Benachrichtigungen einer einzelnen Aktion.
+ *
+ * Gedacht für Sammelvorgänge — das Dokument-Screening führt auf
+ * einen Schlag ein Dutzend Aktionen aus, und ein Dutzend Einzelmails
+ * an dieselben Leute ist keine Information mehr, sondern Lärm. Die
+ * Person entscheidet das in der Vorschau; ohne die Option ändert
+ * sich am bisherigen Verhalten nichts.
+ */
+export interface MailOptionen {
+  ohneMail?: boolean
+}
+
 // Task anlegen (der DB-Trigger stellt sicher, dass der Zuständige
 // Projektmitglied ist)
-export async function createTask(supabase: Db, userId: string, input: CreateTaskInput) {
+export async function createTask(
+  supabase: Db,
+  userId: string,
+  input: CreateTaskInput,
+  optionen: MailOptionen = {}
+) {
   const { project_id, titel, beschreibung, assignee_id, due_date, wiederholung, parent_task_id, folder_id } = input
 
   if (!project_id || typeof project_id !== 'string' || !UUID_RE.test(project_id))
@@ -668,7 +686,7 @@ export async function createTask(supabase: Db, userId: string, input: CreateTask
   // Zuweisungs-Mail. Awaited — auf Vercel wird die Function nach der
   // Response eingefroren, nicht awaitete Promises laufen sonst nie.
   // Fehler fängt die Mail-Funktion intern ab.
-  if (task.assignee && task.assignee.id !== userId) {
+  if (!optionen.ohneMail && task.assignee && task.assignee.id !== userId) {
     const akteur = await akteurVon(supabase, userId, 'Ein Teammitglied')
     await sendTaskAssignedMail({
       to: task.assignee.email,
@@ -705,12 +723,14 @@ export interface UpdateTaskInput {
 // Genutzt von `addTaskNote` bei einer Schlussnotiz: dort meldet die
 // Notiz-Mail den Abschluss gleich mit. Alle übrigen Mails (Folge-Task
 // einer Wiederholung, Zuweisungswechsel) laufen unverändert weiter.
+// `ohneMail` unterdrückt dagegen ALLE Benachrichtigungen dieser
+// Änderung — siehe `MailOptionen`.
 export async function updateTask(
   supabase: Db,
   userId: string,
   id: string,
   input: UpdateTaskInput,
-  optionen: { ohneAbschlussMail?: boolean } = {}
+  optionen: MailOptionen & { ohneAbschlussMail?: boolean } = {}
 ) {
   // Bisherigen Stand laden (für Änderungs-Diff, Umhängen und Mails)
   const { data: current } = await supabase
@@ -965,7 +985,7 @@ export async function updateTask(
   // Awaited — auf Vercel wird die Function nach der Response
   // eingefroren, nicht awaitete Promises laufen sonst nie. Fehler
   // fängt die Mail-Funktion intern ab.
-  if (wurdeGeschlossen) {
+  if (wurdeGeschlossen && !optionen.ohneMail) {
     const akteur = await akteurVon(supabase, userId, 'Ein Teammitglied')
 
     // Nur Ersteller und Zuständige(r) werden informiert — wer selbst
@@ -1010,7 +1030,7 @@ export async function updateTask(
     }
   }
 
-  if (assigneeChanged || aenderungen.length > 0) {
+  if (!optionen.ohneMail && (assigneeChanged || aenderungen.length > 0)) {
     const akteur = await akteurVon(supabase, userId, 'Ein Teammitglied')
     const oldAssignee = current.assignee as unknown as Empfaenger | null
 
@@ -1088,7 +1108,13 @@ export interface AddNoteInput {
 // `schliessen: true` macht daraus eine Schlussnotiz: der Task wird
 // unmittelbar danach geschlossen und archiviert, und alle Beteiligten
 // erhalten eine einzige Mail, die Notiz und Abschluss zusammen meldet.
-export async function addTaskNote(supabase: Db, userId: string, id: string, input: AddNoteInput) {
+export async function addTaskNote(
+  supabase: Db,
+  userId: string,
+  id: string,
+  input: AddNoteInput,
+  optionen: MailOptionen = {}
+) {
   const { text, file_path, file_name, inform_profile_id, schliessen } = input
 
   if (!text || typeof text !== 'string' || !text.trim() || text.length > 5000)
@@ -1143,13 +1169,25 @@ export async function addTaskNote(supabase: Db, userId: string, id: string, inpu
   let folgeTask: Record<string, unknown> | null = null
   let abschlussFehler: string | null = null
   if (schliessen) {
-    const ergebnis = await updateTask(supabase, userId, id, { action: 'schliessen' }, { ohneAbschlussMail: true })
+    const ergebnis = await updateTask(
+      supabase,
+      userId,
+      id,
+      { action: 'schliessen' },
+      { ohneAbschlussMail: true, ohneMail: optionen.ohneMail }
+    )
     if (ergebnis.ok) {
       geschlossenerTask = ergebnis.data.task as Record<string, unknown>
       folgeTask = (ergebnis.data.folgeTask ?? null) as Record<string, unknown> | null
     } else {
       abschlussFehler = ergebnis.error
     }
+  }
+
+  // Ohne Benachrichtigung ist hier Schluss — alles Folgende dient
+  // ausschliesslich dem Mailversand, samt seiner drei Abfragen.
+  if (optionen.ohneMail) {
+    return done({ note, watcherFehler, task: geschlossenerTask, folgeTask, abschlussFehler })
   }
 
   // Task-Kontext, Verantwortlichen und Beobachter für die Mails laden

@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp, Sparkles } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -12,6 +12,7 @@ import Input from './komponenten/Input'
 import { createClient } from './supabaseBrowser'
 import { formatDate } from '../hilfen'
 import TagModusSchalter from './komponenten/TagModusSchalter'
+import ScreeningDialog from './komponenten/ScreeningDialog'
 import { TAG_FARBEN, TAG_FARB_LABELS, TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagFarbe, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
 import { planLesen, type ImportPlan } from '../logik/csvImport'
 import { machT, type Woerterbuch } from './texte'
@@ -136,6 +137,11 @@ interface ProjektClientProps {
   /** Unter welchem Pfad die Modul-Seiten in dieser App hängen
    *  (Portal `/aufgaben`, Terramay `/dashboard/projekte`). */
   basisPfad?: string
+  /** Routen des Dokument-Screenings (`host.screening`). Fehlt der
+   *  Eintrag, hat diese App das Feature nicht und der Knopf
+   *  erscheint gar nicht erst — die Analyse gehört der App, nicht
+   *  dem Modul. */
+  screening?: { analyseUrl: string; ausfuehrenUrl: string }
 }
 
 const emptyTaskForm = { titel: '', beschreibung: '', assignee_id: '', due_date: '', wiederholung: '', folder_id: '', tag_ids: [] as string[] }
@@ -174,7 +180,7 @@ function istUeberfaellig(task: TaskRow): boolean {
   return new Date(`${task.due_date}T00:00:00`) < heute
 }
 
-export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben', texte }: ProjektClientProps) {
+export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben', screening, texte }: ProjektClientProps) {
   const txt = machT(texte)
   const supabase = createClient()
   const router = useRouter()
@@ -221,6 +227,9 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const [importFehler, setImportFehler] = useState('')
   const [importLaeuft, setImportLaeuft] = useState(false)
   const importDateiRef = useRef<HTMLInputElement>(null)
+
+  // Dokument-Screening (Protokoll/Mail → bestätigte Aktionen)
+  const [screeningOpen, setScreeningOpen] = useState(false)
 
   // Tags (Firma) — Verwaltung und Filter
   const [tagModalOpen, setTagModalOpen] = useState(false)
@@ -1026,6 +1035,21 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     setTab('offen')
   }
 
+  /**
+   * Aufgaben frisch aus der Datenbank holen. Nach einem Sammelvorgang
+   * (Screening) ist sie die verlässlichere Quelle als ein von Hand
+   * nachgebauter lokaler Stand — dazwischen liegen Trigger,
+   * Wiederholungen und Unter-Aufgaben.
+   */
+  const tasksNeuLaden = useCallback(async () => {
+    const { data } = await supabase
+      .from('tasks')
+      .select('*, assignee:profiles!tasks_assignee_id_fkey(id, full_name, email), notes:task_notes(count), tags:task_tag_zuordnungen(tag:task_tags(id, name, farbe))')
+      .eq('project_id', project.id)
+      .order('due_date', { ascending: true })
+    if (data) setTasks(data as unknown as TaskRow[])
+  }, [supabase, project.id])
+
   // Ersteller des geöffneten Tasks — er wird wie der Verantwortliche bei
   // jeder Notiz informiert (nur einmal anzeigen, wenn beides dieselbe Person ist)
   const detailErsteller = detailTask && detailTask.created_by && detailTask.created_by !== detailTask.assignee_id
@@ -1170,6 +1194,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           {darfTasksBearbeiten && (
             <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap" onClick={oeffneImport}>
               <FileUp size={14} /> {txt('Import')}
+            </Button>
+          )}
+          {darfTasksBearbeiten && screening && (
+            <Button variant="outline" size="sm" className="flex-1 sm:flex-none py-2.5 sm:py-1.5 whitespace-nowrap" onClick={() => setScreeningOpen(true)}>
+              <Sparkles size={14} /> {txt('Screening')}
             </Button>
           )}
           {/* Hauptaktion — auf dem Handy über die ganze Breite. */}
@@ -2210,6 +2239,26 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           )}
         </div>
       </Modal>
+
+      {/* Dokument-Screening: Protokoll rein, Aktionsvorschlag raus,
+          Mensch entscheidet. Dieselbe Zurückhaltung wie beim Import
+          eine Stufe weiter — hier steht jede einzelne Aktion zur
+          Bestätigung, nicht nur der Vorgang als Ganzes. */}
+      {screening && (
+        <ScreeningDialog
+          open={screeningOpen}
+          onClose={() => setScreeningOpen(false)}
+          projekt={{ id: project.id, name: project.name }}
+          mitglieder={memberOptions}
+          ordner={folders}
+          tags={tags}
+          andereProjekte={moveProjekte.filter(p => p.id !== project.id)}
+          screening={screening}
+          userId={userId}
+          txt={txt}
+          onFertig={tasksNeuLaden}
+        />
+      )}
 
       {/* Aufgaben aus einer CSV-Datei übernehmen. Zwei Schritte mit
           Absicht: erst zeigen, was entstehen würde, dann schreiben —

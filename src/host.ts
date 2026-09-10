@@ -40,6 +40,24 @@ export interface ProjektMgtHost {
   }
 
   /**
+   * Dokument-Screening. Das Modul beschreibt, was ein Screening
+   * liefern darf, und führt den bestätigten Plan aus — WELCHES
+   * Sprachmodell das Dokument liest, entscheidet die App in einer
+   * eigenen Route. So bekommt das Modul keine Abhängigkeit dazu,
+   * die beide Apps mitschleppen müssten.
+   *
+   * Fehlt der Eintrag, zeigt die Oberfläche den Screening-Knopf
+   * gar nicht erst — eine App ohne Analyse-Route hat das Feature
+   * schlicht nicht.
+   */
+  screening?: {
+    /** Pfad der eigenen Analyse-Route, z.B. `/api/aufgaben/screening/analysieren` */
+    analyseUrl: string
+    /** Pfad der Ausführungs-Route, die `routes/screening.ts` re-exportiert */
+    ausfuehrenUrl: string
+  }
+
+  /**
    * Überschreibungen einzelner Beschriftungen. Schlüssel sind die
    * deutschen Originaltexte. Wird in Phase 2 von der Oberfläche
    * benutzt; heute noch ohne Wirkung.

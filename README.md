@@ -13,7 +13,7 @@ Wer den Code in `node_modules/@tomtalent/projekt-mgt` bearbeitet, verliert die �
 ## Aufbau
 
 ```
-sql/modul/    Migrationen des Moduls in Reihenfolge (01…09). In jeder App
+sql/modul/    Migrationen des Moduls in Reihenfolge (01…10). In jeder App
               identisch — hier stehen die Tabellen, Trigger und Policies,
               die dem Projekt-Mgt gehören.
 sql/host/     Was die Gastgeber-App bereitstellen muss. Pro App eine
@@ -67,7 +67,7 @@ projektMgtKonfigurieren({
 **4. Datenbank.** In dieser Reihenfolge:
 
 1. `sql/host/<app>_01_voraussetzungen.sql`
-2. `sql/modul/01` bis `09` der Reihe nach
+2. `sql/modul/01` bis `10` der Reihe nach
 3. `sql/host/<app>_02_profilzugriff.sql`
 
 Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` und `shares_project_with()` aus `modul/01` benutzt. Stünde er in derselben Datei wie Schritt 1, würde ein Ausführen am Stück mit «function does not exist» abbrechen — eine Datei, die man nur teilweise ausführen darf, ist eine Falle.
@@ -78,7 +78,7 @@ Die Gastgeber-App muss mitbringen: `profiles` (mit `role`, `is_blocked`, `can_us
 
 ```sql
 BEGIN;
--- host/<app>_01, dann modul/01..08, dann host/<app>_02 aneinandergehängt
+-- host/<app>_01, dann modul/01..10, dann host/<app>_02 aneinandergehängt
 ROLLBACK;
 ```
 
@@ -150,6 +150,49 @@ Drei Stellen gehen nicht glatt auf, deshalb ist dem Schreiben eine **Vorschau** 
 - **Keine E-Mails.** Der Import schreibt direkt in die Datenbank statt über die Fachlogik: Fünfzig Aufgaben wären sonst fünfzig Zuweisungs-Mails. Zugriff und Regeln bleiben unverändert, RLS und Trigger prüfen jede Zeile.
 
 Das Lesen der Datei steht in `src/logik/csvImport.ts` — frei von Datenbank und Netz, damit es sich ohne laufende App prüfen lässt.
+
+## Dokument-Screening
+
+Ein Protokoll, eine Mail, eine Offerte — darin steht Arbeit, die sonst jemand von Hand überträgt. Die Projektansicht nimmt das Dokument entgegen (PDF, Bild oder eingefügter Text), lässt es gegen den Projektkontext lesen und macht daraus einen **Vorschlag**: Notizen an bestehende Aufgaben, neue Aufgaben, Änderungen, Abschlüsse.
+
+**Ausgeführt wird nichts davon von selbst.** Die Vorschau zeigt jede Aktion einzeln, mit Begründung und dem wörtlichen Zitat aus dem Dokument, auf das sie sich stützt. Jede lässt sich abwählen und ändern — bis hin zu einem anderen Zielprojekt. «Aufgabe schliessen» beginnt grundsätzlich abgewählt: es ist die einzige Aktion, die etwas wegnimmt.
+
+Die Arbeit ist auf zwei Seiten verteilt:
+
+| | |
+|---|---|
+| **Modul** | `logik/screening.ts` — Kontext laden, das Ausgabeschema, die Prüfung der Antwort. `routes/screening.ts` — den bestätigten Plan ausführen. `ui/komponenten/ScreeningDialog.tsx` — Maske, Vorschau, Bearbeiten. |
+| **App** | Eine eigene Analyse-Route, die das Dokument tatsächlich einem Sprachmodell vorlegt. |
+
+Der Schnitt ist Absicht: das Modul liefert TypeScript-Quellen an zwei Apps und soll keine SDK-Abhängigkeit dazubekommen, die beide mitschleppen müssen. Die App meldet ihre Routen im Host-Adapter an:
+
+```ts
+screening: {
+  analyseUrl: '/api/aufgaben/screening/analysieren',
+  ausfuehrenUrl: '/api/aufgaben/screening/ausfuehren',
+}
+```
+
+Fehlt der Eintrag, erscheint der Screening-Knopf gar nicht erst — eine App ohne Analyse-Route hat das Feature schlicht nicht. Die Seite reicht `hostLesen().screening` als Prop an `ProjektClient` weiter; die Oberfläche ist eine Client-Komponente und kennt die serverseitige Konfiguration nicht, genau wie beim `basisPfad`.
+
+**Das Dokument ist Fremdmaterial.** Sein Inhalt ist Datenmaterial, nie eine Anweisung. Vier Dinge halten das:
+
+- Das Ausgabeschema lässt nur die vier Aktionstypen zu — etwas anderes kann ein Dokument nicht auslösen.
+- `planPruefen` verwirft jede ID, die nicht aus dem serverseitig geladenen Kontext stammt. Ein Dokument kann nicht auf fremde Aufgaben zeigen.
+- Ausgeführt wird nur, was ein Mensch bestätigt hat.
+- Die Ausführung läuft über die gewöhnlichen Service-Funktionen mit dem Client der handelnden Person, unter RLS. Ein Screening kann nie mehr als sie selbst.
+
+**Keine Mail-Lawine.** Ein Protokoll erzeugt schnell ein Dutzend Aktionen, und ein Dutzend Einzelmails an dieselben Leute ist keine Information mehr. Der Schalter «Beteiligte per Mail informieren» steht darum standardmässig aus; `createTask`, `updateTask` und `addTaskNote` nehmen dafür `{ ohneMail: true }` entgegen (`MailOptionen`). Ohne die Option ändert sich am bisherigen Verhalten nichts.
+
+Das hochgeladene Dokument liegt im privaten Bucket `screening-dokumente`, nach Person geordnet, und wird nach der Entscheidung wieder gelöscht. Was bleiben soll, wandert als Notiz-Anhang nach `task-attachments` — dort gelten dann die Projektrechte. Ausgeführte Läufe stehen in `screening_laeufe` (`sql/modul/10`): wer hat wann welches Dokument in welche Aktionen übersetzt.
+
+Die beiden Prüfungen — `planPruefen` und `istGueltigeAktion` — sind die Stelle, an der das Feature sicher ist oder nicht. Sie brauchen weder Netz noch Datenbank und haben darum ihr eigenes Werkzeug:
+
+```bash
+npm run screening-pruefen
+```
+
+Es wirft erfundene Aufgaben-IDs, fremde Projekte, unbekannte Personen, kaputte Daten und Pfad-Tricks dagegen und prüft, dass alles davon verworfen **und gemeldet** wird. Wer an einer der beiden Funktionen etwas ändert, lässt es laufen.
 
 ## Rechte
 
