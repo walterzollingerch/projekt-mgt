@@ -142,6 +142,10 @@ interface ProjektClientProps {
    *  erscheint gar nicht erst — die Analyse gehört der App, nicht
    *  dem Modul. */
   screening?: { analyseUrl: string; ausfuehrenUrl: string }
+  /** Sprache der Person (`de`, `pt`, `en`) — das Screening antwortet in
+   *  ihr. Bewusst getrennt von `texte`: das Wörterbuch übersetzt
+   *  Beschriftungen, die Sprache steuert erzeugte Inhalte. */
+  sprache?: string
 }
 
 const emptyTaskForm = { titel: '', beschreibung: '', assignee_id: '', due_date: '', wiederholung: '', folder_id: '', tag_ids: [] as string[] }
@@ -180,7 +184,7 @@ function istUeberfaellig(task: TaskRow): boolean {
   return new Date(`${task.due_date}T00:00:00`) < heute
 }
 
-export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben', screening, texte }: ProjektClientProps) {
+export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben', screening, sprache, texte }: ProjektClientProps) {
   const txt = machT(texte)
   const supabase = createClient()
   const router = useRouter()
@@ -2254,6 +2258,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           tags={tags}
           andereProjekte={moveProjekte.filter(p => p.id !== project.id)}
           screening={screening}
+          sprache={sprache}
           userId={userId}
           txt={txt}
           onFertig={tasksNeuLaden}

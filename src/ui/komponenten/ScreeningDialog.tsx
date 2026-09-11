@@ -45,6 +45,8 @@ interface ScreeningDialogProps {
   /** Projekte, in die eine Aufgabe stattdessen gelegt werden kann */
   andereProjekte: { id: string; name: string }[]
   screening: { analyseUrl: string; ausfuehrenUrl: string }
+  /** Sprache der Person (`de`, `pt`, `en`) — in ihr antwortet das Modell. Ohne Angabe Deutsch. */
+  sprache?: string
   userId: string
   txt: T
   /** Nach der Ausführung: Ansicht neu laden */
@@ -77,6 +79,7 @@ export default function ScreeningDialog({
   tags,
   andereProjekte,
   screening,
+  sprache,
   userId,
   txt,
   onFertig,
@@ -167,7 +170,7 @@ export default function ScreeningDialog({
       const res = await fetch(screening.analyseUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projektId: projekt.id, quelle }),
+        body: JSON.stringify({ projektId: projekt.id, quelle, sprache }),
       })
       const daten = await res.json()
       if (!res.ok) {
@@ -436,19 +439,28 @@ export default function ScreeningDialog({
 
       {schritt === 'ergebnis' && (
         <div className="space-y-2">
-          {ergebnisse.map((e, i) => (
-            <div
-              key={i}
-              className={`flex gap-2 items-start p-2 rounded-md text-sm ${e.ok ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'}`}
-            >
-              {e.ok ? (
-                <CheckCircle2 size={15} className="shrink-0 mt-0.5" />
-              ) : (
-                <XCircle size={15} className="shrink-0 mt-0.5" />
-              )}
-              <span>{e.meldung}</span>
-            </div>
-          ))}
+          {ergebnisse.map((e, i) => {
+            // Die Erfolgsmeldung baut die Oberfläche selbst — sie kennt
+            // die Aktion und das Wörterbuch. Vom Server kommt nur der
+            // Grund eines Scheiterns; der ist deutsch wie alle
+            // Meldungen der Fachlogik.
+            const aktion = zeilen.find(z => z.aktion.nr === e.nr)?.aktion
+            const zielName = aktion ? (aktion.typ === 'neu' ? aktion.titel : taskTitel(aktion.taskId)) : ''
+            const meldung = e.ok && aktion ? txt(ERFOLG[aktion.typ], zielName) : e.meldung
+            return (
+              <div
+                key={i}
+                className={`flex gap-2 items-start p-2 rounded-md text-sm ${e.ok ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700'}`}
+              >
+                {e.ok ? (
+                  <CheckCircle2 size={15} className="shrink-0 mt-0.5" />
+                ) : (
+                  <XCircle size={15} className="shrink-0 mt-0.5" />
+                )}
+                <span>{meldung}</span>
+              </div>
+            )
+          })}
           {ergebnisse.length === 0 && <p className="text-sm text-gray-500">{txt('Nichts ausgeführt.')}</p>}
         </div>
       )}
@@ -465,6 +477,14 @@ const TYP_LABEL: Record<ScreeningAktion['typ'], string> = {
   neu: 'Neue Aufgabe',
   aktualisieren: 'Änderung',
   schliessen: 'Abschluss',
+}
+
+/** Erfolgsmeldung im Ergebnis-Schritt; {0} ist Titel der Aufgabe */
+const ERFOLG: Record<ScreeningAktion['typ'], string> = {
+  notiz: 'Notiz an «{0}» angefügt',
+  neu: 'Aufgabe «{0}» eröffnet',
+  aktualisieren: '«{0}» geändert',
+  schliessen: '«{0}» geschlossen',
 }
 
 const TYP_FARBE: Record<ScreeningAktion['typ'], string> = {

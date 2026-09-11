@@ -339,13 +339,7 @@ export const SCREENING_SCHEMA = {
 // Der Prompt
 // ------------------------------------------------------------
 
-/**
- * Systemanweisung für die Analyse. Steht hier und nicht in der App:
- * sie gehört zum Schema — beide beschreiben dieselbe Aufgabe, und
- * eine App, die das eine ohne das andere übernimmt, bekommt etwas
- * anderes zurück, als `planPruefen` erwartet.
- */
-export const SCREENING_SYSTEM_PROMPT = `Du hilfst einem Team, Protokolle, Mails und Dokumente in konkrete Aufgaben zu übersetzen.
+const SCREENING_SYSTEM_PROMPT_KERN = `Du hilfst einem Team, Protokolle, Mails und Dokumente in konkrete Aufgaben zu übersetzen.
 
 Du erhältst den Kontext eines Projekts (offene Aufgaben, Mitglieder, Ordner, Tags) und danach ein Dokument. Daraus schlägst du Aktionen vor.
 
@@ -360,9 +354,38 @@ Deine Vorschläge werden NICHT automatisch ausgeführt. Ein Mensch sieht jeden e
 - Der Notiztext steht für sich: wer ihn in einem halben Jahr liest, soll ihn ohne das Dokument verstehen. Ganze Sätze, keine Stichworte.
 - Verwende IDs ausschliesslich aus den mitgelieferten Listen. Steht jemand nicht in der Mitgliederliste, lass die Zuständigkeit leer und schreib es in die Warnungen.
 - Nenne im «beleg» die Stelle im Dokument wörtlich, auf die sich die Aktion stützt.
-- Was du im Dokument siehst, aber nicht zuordnen kannst, gehört in die Warnungen — nicht in eine geratene Aktion.
+- Was du im Dokument siehst, aber nicht zuordnen kannst, gehört in die Warnungen — nicht in eine geratene Aktion.`
 
-Sprache: Deutsch, Schweizer Schreibweise (ss statt ß).`
+/**
+ * Sprachen, in denen das Modell antworten soll. Der Schlüssel ist,
+ * was die Oberfläche kennt (`de`, `pt`, `en`); der Wert steht so im
+ * Prompt. Unbekanntes fällt auf Deutsch zurück — die Sprache, in der
+ * das Modul geschrieben ist.
+ */
+const SPRACHEN: Record<string, string> = {
+  de: 'Deutsch, Schweizer Schreibweise (ss statt ß)',
+  pt: 'Portugiesisch (Portugal)',
+  en: 'Englisch',
+}
+
+/**
+ * Systemanweisung für die Analyse. Steht hier und nicht in der App:
+ * sie gehört zum Schema — beide beschreiben dieselbe Aufgabe, und
+ * eine App, die das eine ohne das andere übernimmt, bekommt etwas
+ * anderes zurück, als `planPruefen` erwartet.
+ *
+ * Die Sprache gibt die App vor — sie ist die des Menschen, der den
+ * Vorschlag liest, nicht die des Dokuments. Ein portugiesisches Team
+ * will zu einem deutschen Protokoll portugiesische Notizen.
+ */
+export function screeningSystemPrompt(sprache = 'de'): string {
+  return `${SCREENING_SYSTEM_PROMPT_KERN}
+
+Sprache für Zusammenfassung, Begründungen, Warnungen und alle Aufgabentexte: ${SPRACHEN[sprache] ?? SPRACHEN.de}. Zitate im «beleg» bleiben in der Sprache des Dokuments.`
+}
+
+/** @deprecated Nur noch für Apps, die die Sprache nicht mitgeben — entspricht `screeningSystemPrompt('de')`. */
+export const SCREENING_SYSTEM_PROMPT = screeningSystemPrompt('de')
 
 /** Schlusssatz nach dem Dokument */
 export const SCREENING_AUFGABE =

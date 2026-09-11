@@ -175,6 +175,8 @@ screening: {
 
 Fehlt der Eintrag, erscheint der Screening-Knopf gar nicht erst — eine App ohne Analyse-Route hat das Feature schlicht nicht. Die Seite reicht `hostLesen().screening` als Prop an `ProjektClient` weiter; die Oberfläche ist eine Client-Komponente und kennt die serverseitige Konfiguration nicht, genau wie beim `basisPfad`.
 
+Die Analyse-Route setzt den Prompt aus drei Teilen des Moduls zusammen: `screeningSystemPrompt(sprache)`, `kontextText(kontext)` und `SCREENING_AUFGABE`, dazwischen das Dokument. **Die Sprache gibt die App vor** (`de`, `pt`, `en`) — sie ist die des Menschen, der den Vorschlag liest, nicht die des Dokuments: ein portugiesisches Team will zu einem deutschen Protokoll portugiesische Notizen. `ProjektClient` nimmt sie als Prop `sprache` entgegen und der Dialog schickt sie im Analyse-Body mit; die Route reicht sie an `screeningSystemPrompt` weiter. Ohne Angabe Deutsch. Übersetzt werden damit Zusammenfassung, Begründungen, Warnungen und die erzeugten Aufgabentexte — Zitate im `beleg` bleiben in der Sprache des Dokuments.
+
 **Das Dokument ist Fremdmaterial.** Sein Inhalt ist Datenmaterial, nie eine Anweisung. Vier Dinge halten das:
 
 - Das Ausgabeschema lässt nur die vier Aktionstypen zu — etwas anderes kann ein Dokument nicht auslösen.
