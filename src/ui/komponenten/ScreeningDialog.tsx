@@ -446,7 +446,7 @@ export default function ScreeningDialog({
             // Meldungen der Fachlogik.
             const aktion = zeilen.find(z => z.aktion.nr === e.nr)?.aktion
             const zielName = aktion ? (aktion.typ === 'neu' ? aktion.titel : taskTitel(aktion.taskId)) : ''
-            const meldung = e.ok && aktion ? txt(ERFOLG[aktion.typ], zielName) : e.meldung
+            const meldung = e.ok && aktion ? erfolgsMeldung(aktion.typ, zielName, txt) : e.meldung
             return (
               <div
                 key={i}
@@ -472,19 +472,36 @@ export default function ScreeningDialog({
 // Eine Zeile der Vorschau
 // ------------------------------------------------------------
 
-const TYP_LABEL: Record<ScreeningAktion['typ'], string> = {
-  notiz: 'Notiz',
-  neu: 'Neue Aufgabe',
-  aktualisieren: 'Änderung',
-  schliessen: 'Abschluss',
+/**
+ * Als Funktionen mit ausgeschriebenen txt()-Aufrufen statt als
+ * Tabelle: `werkzeug/texte-pruefen.mjs` findet die Schlüssel nur so,
+ * und eine Übersetzung, die das Werkzeug nicht sieht, fehlt irgendwann.
+ */
+function typLabel(typ: ScreeningAktion['typ'], txt: T): string {
+  switch (typ) {
+    case 'notiz':
+      return txt('Notiz')
+    case 'neu':
+      return txt('Neue Aufgabe')
+    case 'aktualisieren':
+      return txt('Änderung')
+    case 'schliessen':
+      return txt('Abschluss')
+  }
 }
 
-/** Erfolgsmeldung im Ergebnis-Schritt; {0} ist Titel der Aufgabe */
-const ERFOLG: Record<ScreeningAktion['typ'], string> = {
-  notiz: 'Notiz an «{0}» angefügt',
-  neu: 'Aufgabe «{0}» eröffnet',
-  aktualisieren: '«{0}» geändert',
-  schliessen: '«{0}» geschlossen',
+/** Erfolgsmeldung im Ergebnis-Schritt */
+function erfolgsMeldung(typ: ScreeningAktion['typ'], zielName: string, txt: T): string {
+  switch (typ) {
+    case 'notiz':
+      return txt('Notiz an «{0}» angefügt', zielName)
+    case 'neu':
+      return txt('Aufgabe «{0}» eröffnet', zielName)
+    case 'aktualisieren':
+      return txt('«{0}» geändert', zielName)
+    case 'schliessen':
+      return txt('«{0}» geschlossen', zielName)
+  }
 }
 
 const TYP_FARBE: Record<ScreeningAktion['typ'], string> = {
@@ -543,7 +560,7 @@ function AktionZeile({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`px-1.5 py-0.5 rounded border text-[11px] font-medium ${TYP_FARBE[a.typ]}`}>
-              {txt(TYP_LABEL[a.typ])}
+              {typLabel(a.typ, txt)}
             </span>
             <span className="text-sm font-medium text-gray-800 truncate">
               {a.typ === 'neu' ? a.titel : taskTitel(a.taskId)}
