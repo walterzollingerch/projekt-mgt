@@ -172,9 +172,9 @@ export default function ScreeningDialog({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projektId: projekt.id, quelle, sprache }),
       })
-      const daten = await res.json()
-      if (!res.ok) {
-        setFehler(daten.error || txt('Die Analyse ist fehlgeschlagen.'))
+      const daten = await antwortLesen(res)
+      if (!res.ok || !daten) {
+        setFehler(fehlerText(res, daten, txt('Die Analyse ist fehlgeschlagen.'), txt))
         setLaeuft(false)
         return
       }
@@ -222,9 +222,9 @@ export default function ScreeningDialog({
           dokument: anhaengen ? dokument : null,
         }),
       })
-      const daten = await res.json()
-      if (!res.ok) {
-        setFehler(daten.error || txt('Die Ausführung ist fehlgeschlagen.'))
+      const daten = await antwortLesen(res)
+      if (!res.ok || !daten) {
+        setFehler(fehlerText(res, daten, txt('Die Ausführung ist fehlgeschlagen.'), txt))
         setLaeuft(false)
         return
       }
@@ -466,6 +466,39 @@ export default function ScreeningDialog({
       )}
     </Modal>
   )
+}
+
+// ------------------------------------------------------------
+// Antworten lesen
+// ------------------------------------------------------------
+
+/**
+ * Liest die Antwort als JSON — oder gibt null zurück, wenn es keines
+ * ist. Ein Gateway-Timeout kommt als HTML-Seite, nicht als JSON; ein
+ * blosses `res.json()` würde daran scheitern und die eigentliche
+ * Ursache (der HTTP-Status) ginge im catch verloren.
+ */
+async function antwortLesen(res: Response): Promise<Record<string, unknown> | null> {
+  try {
+    const d = await res.json()
+    return d && typeof d === 'object' ? (d as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Die Fehlermeldung: was die Route sagt, sonst was der HTTP-Status
+ * sagt. Ein Timeout (504) bekommt einen eigenen Satz — er ist die
+ * wahrscheinlichste Ursache bei grossen Dokumenten und für die Person
+ * ohne Hinweis nicht zu deuten.
+ */
+function fehlerText(res: Response, daten: Record<string, unknown> | null, standard: string, txt: T): string {
+  if (daten && typeof daten.error === 'string' && daten.error) return daten.error
+  if (res.status === 504 || res.status === 502) {
+    return txt('Die Analyse hat zu lange gedauert und wurde abgebrochen. Ein kleineres Dokument oder ein Textauszug hilft.')
+  }
+  return `${standard} (HTTP ${res.status})`
 }
 
 // ------------------------------------------------------------
