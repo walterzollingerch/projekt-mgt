@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp, Sparkles } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp, Sparkles, LayoutList, Columns3, CornerDownRight } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -184,6 +184,21 @@ function istUeberfaellig(task: TaskRow): boolean {
   return new Date(`${task.due_date}T00:00:00`) < heute
 }
 
+// Wie die offenen Aufgaben angeordnet sind: als Liste nach Ordnern
+// oder als Spalten nach zuständiger Person. Die Wahl ist eine
+// persönliche Gewohnheit und keine Eigenschaft des Projekts — sie
+// liegt deshalb im Browser, nicht in der Datenbank.
+type Ansicht = 'ordner' | 'personen'
+const ANSICHT_SCHLUESSEL = 'projekt-mgt.ansicht'
+
+function gespeicherteAnsicht(): Ansicht {
+  try {
+    return localStorage.getItem(ANSICHT_SCHLUESSEL) === 'personen' ? 'personen' : 'ordner'
+  } catch {
+    return 'ordner'
+  }
+}
+
 export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben', screening, sprache, texte }: ProjektClientProps) {
   const txt = machT(texte)
   const supabase = createClient()
@@ -194,6 +209,15 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const [folders, setFolders] = useState(initialFolders)
   const [tags, setTags] = useState(initialTags)
   const [tab, setTab] = useState<'offen' | 'archiv'>('offen')
+  // Anordnung der offenen Aufgaben — startet mit «ordner», damit
+  // Server und erster Client-Render übereinstimmen; die gespeicherte
+  // Wahl kommt gleich danach aus dem localStorage.
+  const [ansicht, setAnsicht] = useState<Ansicht>('ordner')
+  useEffect(() => { setAnsicht(gespeicherteAnsicht()) }, [])
+  const ansichtWaehlen = (a: Ansicht) => {
+    setAnsicht(a)
+    try { localStorage.setItem(ANSICHT_SCHLUESSEL, a) } catch { /* privater Modus o. ä. — dann gilt die Wahl nur bis zum Neuladen */ }
+  }
   // Ansicht der Übersicht, aus der dieser Task geöffnet wurde (Query
   // `zurueck`). Leer beim direkten Aufruf und bei Deep-Links aus Mails.
   const [zurueckQuery, setZurueckQuery] = useState('')
@@ -379,6 +403,39 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
   const istMitglied = members.some(m => m.profile_id === userId)
   const darfTasksBearbeiten = isManager || istMitglied
+
+  // Offene Tasks nach zuständiger Person: «Ich» zuerst, dann die
+  // anderen alphabetisch, «Nicht zugewiesen» zuletzt. Gezeigt wird,
+  // wer offene Aufgaben hat — ausser mir selbst: meine Spalte steht
+  // auch leer da, sonst fehlt der Platz, um sich etwas zuzuteilen.
+  // Unter-Tasks stehen bei ihrer eigenen zuständigen Person, mit dem
+  // Mutter-Task als Hinweis; die Ordner-Hierarchie gibt es hier nicht.
+  const personenSpalten = useMemo(() => {
+    const offen = nachTagFilter(tasks.filter(t => t.status === 'offen'))
+      .sort((a, b) => a.due_date.localeCompare(b.due_date))
+    const namen = new Map<string, string>()
+    members.forEach(m => { if (m.profile) namen.set(m.profile_id, m.profile.full_name) })
+    // Zuständige, die kein Mitglied mehr sind, tauchen trotzdem auf
+    offen.forEach(t => { if (t.assignee) namen.set(t.assignee.id, t.assignee.full_name) })
+    const proPerson = new Map<string, TaskRow[]>()
+    offen.forEach(t => {
+      const key = t.assignee_id ?? ''
+      proPerson.set(key, [...(proPerson.get(key) ?? []), t])
+    })
+    const spalten: { id: string; name: string; istIch: boolean; eintraege: TaskRow[] }[] = []
+    if (istMitglied || proPerson.has(userId)) {
+      spalten.push({ id: userId, name: txt('Ich'), istIch: true, eintraege: proPerson.get(userId) ?? [] })
+    }
+    Array.from(namen.entries())
+      .filter(([id]) => id !== userId && (proPerson.get(id)?.length ?? 0) > 0)
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .forEach(([id, name]) => spalten.push({ id, name, istIch: false, eintraege: proPerson.get(id) ?? [] }))
+    if ((proPerson.get('')?.length ?? 0) > 0) {
+      spalten.push({ id: '', name: txt('Nicht zugewiesen'), istIch: false, eintraege: proPerson.get('') ?? [] })
+    }
+    return spalten
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, members, userId, istMitglied, nachTagFilter])
 
   // Das persönliche Projekt «Eigene Tasks»: keine Firma, genau ein
   // Mitglied, alles mir zugewiesen. Es wird nicht verwaltet — weder
@@ -1142,6 +1199,70 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     </button>
   )
 
+  // Karte in der Personen-Ansicht: kompakter als die Listenzeile. Was
+  // die Spalte schon sagt (die zuständige Person), fehlt; was die
+  // Liste über die Gruppe sagt (der Ordner), steht dafür auf der Karte.
+  const renderKarte = (task: TaskRow) => {
+    const mutter = task.parent_task_id ? tasks.find(t => t.id === task.parent_task_id) : null
+    const kinder = tasks.filter(t => t.parent_task_id === task.id)
+    const ordner = task.folder_id ? folders.find(f => f.id === task.folder_id) : null
+    const ueberfaellig = istUeberfaellig(task)
+    return (
+      <button
+        key={task.id}
+        onClick={() => openDetail(task)}
+        className="w-full text-left bg-white rounded-lg border border-gray-200 shadow-sm p-3 hover:border-[#1a5276] transition-colors flex flex-col gap-1.5"
+      >
+        {mutter && (
+          <div className="flex items-center gap-1 text-[11px] text-gray-400 min-w-0">
+            <CornerDownRight size={11} className="shrink-0" />
+            <span className="truncate">{mutter.titel}</span>
+          </div>
+        )}
+        <div className="font-medium text-sm text-gray-800 line-clamp-3">{task.titel}</div>
+        {tagsVonTask(task.tags, tags).length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            {tagsVonTask(task.tags, tags).map(t => (
+              <TagChip key={t.id} name={t.name} farbe={t.farbe} size="sm" />
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-gray-500">
+          <span className={ueberfaellig ? 'text-red-600 font-semibold' : ''}>
+            {formatDate(task.due_date)}
+          </span>
+          {noteCount(task) > 0 && (
+            <span
+              role="button"
+              title={txt('Notizen öffnen')}
+              onClick={e => { e.stopPropagation(); openDetail(task, true) }}
+              className="inline-flex items-center gap-1 text-[#1a5276] hover:underline"
+            >
+              <MessageSquare size={12} />
+              {noteCount(task)}
+            </span>
+          )}
+          {task.wiederholung && (
+            <span className="inline-flex items-center" title={wiederholungLabels(txt)[task.wiederholung]}>
+              <Repeat size={12} />
+            </span>
+          )}
+          {kinder.length > 0 && (
+            <span title={txt('Unter-Tasks erledigt')}>
+              {kinder.filter(k => k.status === 'geschlossen').length}/{kinder.length}
+            </span>
+          )}
+          {ordner && (
+            <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
+              <Folder size={12} className="shrink-0" />
+              <span className="truncate">{ordner.name}</span>
+            </span>
+          )}
+        </div>
+      </button>
+    )
+  }
+
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 sm:py-8">
       <Link href={zurueckHref} className="inline-flex items-center gap-1 py-1 text-sm text-[#1a5276] hover:underline mb-4">
@@ -1237,6 +1358,28 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         >
           Archiv ({tasks.filter(t => t.status === 'geschlossen').length})
         </button>
+        {/* Anordnung der offenen Aufgaben — im eigenen Projekt gibt es
+            nur eine Person, da bleibt die Ordner-Liste */}
+        {tab === 'offen' && !istEigenesProjekt && (
+          <div className="ml-auto flex items-center gap-0.5 mb-1.5" role="group" aria-label={txt('Anordnung')}>
+            {([
+              { wert: 'ordner', Icon: LayoutList, label: txt('Nach Ordnern') },
+              { wert: 'personen', Icon: Columns3, label: txt('Nach Personen') },
+            ] as const).map(({ wert, Icon, label }) => (
+              <button
+                key={wert}
+                type="button"
+                title={label}
+                aria-pressed={ansicht === wert}
+                onClick={() => ansichtWaehlen(wert)}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${ansicht === wert ? 'bg-[#eaf2f8] text-[#1a5276]' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+              >
+                <Icon size={15} />
+                <span className="hidden sm:inline">{label}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Tag-Filter — ab zwei gewählten Tags ist die Verknüpfung
@@ -1275,7 +1418,55 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         </div>
       )}
 
-      {tab === 'offen' && (
+      {tab === 'offen' && ansicht === 'personen' && !istEigenesProjekt && (
+        personenSpalten.every(s => s.eintraege.length === 0) ? (
+          <p className="text-sm text-gray-500 py-8 text-center">
+            {filterTags.size > 0 ? txt('Keine offenen Aufgaben mit den gewählten Tags.') : txt('Keine offenen Tasks.')}
+          </p>
+        ) : (
+          // Spalten nebeneinander, bei Bedarf seitlich scrollbar. Der
+          // negative Rand lässt die Reihe auf dem Handy bis an den
+          // Bildschirmrand laufen, damit die nächste Spalte anschneidet
+          // und als «da kommt noch mehr» sichtbar ist.
+          <div className="-mx-4 px-4 overflow-x-auto pb-2">
+            <div className="flex items-start gap-3 sm:gap-4 min-w-max">
+              {personenSpalten.map(spalte => (
+                <section key={spalte.id || 'ohne'} className="w-[78vw] sm:w-72 shrink-0 rounded-lg border border-gray-200 bg-gray-50/70">
+                  <div className="flex items-center gap-2 px-3 py-2.5 border-b border-gray-200 bg-white rounded-t-lg">
+                    <span className={`text-sm font-semibold truncate ${spalte.id ? 'text-gray-800' : 'text-gray-500'}`}>
+                      {spalte.name}
+                    </span>
+                    <span className="shrink-0 text-xs text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">
+                      {spalte.eintraege.length}
+                    </span>
+                    {darfTasksBearbeiten && (
+                      <button
+                        title={spalte.id ? txt('Aufgabe für {0} anlegen', spalte.name) : txt('Aufgabe ohne Zuständige:n anlegen')}
+                        onClick={() => {
+                          setTaskForm({ ...emptyTaskForm, assignee_id: spalte.id })
+                          setSubtaskParent(null)
+                          setError('')
+                          setTaskModalOpen(true)
+                        }}
+                        className="ml-auto shrink-0 p-1.5 text-gray-400 hover:text-[#1a5276] hover:bg-gray-100 rounded-md transition-colors"
+                      >
+                        <Plus size={16} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2 p-2">
+                    {spalte.eintraege.length === 0
+                      ? <p className="text-xs text-gray-400 py-3 text-center">{txt('Keine offenen Aufgaben.')}</p>
+                      : spalte.eintraege.map(renderKarte)}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </div>
+        )
+      )}
+
+      {tab === 'offen' && (ansicht === 'ordner' || istEigenesProjekt) && (
         <div className="flex flex-col gap-3">
           {offeneAnzahl === 0 && folders.length === 0 && (
             <p className="text-sm text-gray-500 py-8 text-center">{txt('Keine offenen Tasks.')}</p>
