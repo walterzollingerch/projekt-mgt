@@ -177,6 +177,25 @@ function hierarchisch(offen: TaskRow[]): { task: TaskRow; istKind: boolean }[] {
   return result
 }
 
+// Reihenfolge innerhalb einer Personen-Spalte: Wurzeln nach Fälligkeit,
+// darunter eingerückt die Unter-Tasks, die derselben Person gehören.
+// Ein Unter-Task, dessen Mutter-Task in einer anderen Spalte steht,
+// zählt hier als Wurzel — die Karte nennt dann den Mutter-Task.
+function spaltenReihenfolge(liste: TaskRow[]): { task: TaskRow; unterMutter: boolean }[] {
+  const ids = new Set(liste.map(t => t.id))
+  const nachDatum = (a: TaskRow, b: TaskRow) => a.due_date.localeCompare(b.due_date)
+  const result: { task: TaskRow; unterMutter: boolean }[] = []
+  liste
+    .filter(t => !t.parent_task_id || !ids.has(t.parent_task_id))
+    .sort(nachDatum)
+    .forEach(wurzel => {
+      result.push({ task: wurzel, unterMutter: false })
+      liste.filter(t => t.parent_task_id === wurzel.id).sort(nachDatum)
+        .forEach(kind => result.push({ task: kind, unterMutter: true }))
+    })
+  return result
+}
+
 function istUeberfaellig(task: TaskRow): boolean {
   if (task.status !== 'offen') return false
   const heute = new Date()
@@ -422,16 +441,17 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       const key = t.assignee_id ?? ''
       proPerson.set(key, [...(proPerson.get(key) ?? []), t])
     })
-    const spalten: { id: string; name: string; istIch: boolean; eintraege: TaskRow[] }[] = []
+    const eintraege = (id: string) => spaltenReihenfolge(proPerson.get(id) ?? [])
+    const spalten: { id: string; name: string; istIch: boolean; eintraege: ReturnType<typeof spaltenReihenfolge> }[] = []
     if (istMitglied || proPerson.has(userId)) {
-      spalten.push({ id: userId, name: txt('Ich'), istIch: true, eintraege: proPerson.get(userId) ?? [] })
+      spalten.push({ id: userId, name: txt('Ich'), istIch: true, eintraege: eintraege(userId) })
     }
     Array.from(namen.entries())
       .filter(([id]) => id !== userId && (proPerson.get(id)?.length ?? 0) > 0)
       .sort((a, b) => a[1].localeCompare(b[1]))
-      .forEach(([id, name]) => spalten.push({ id, name, istIch: false, eintraege: proPerson.get(id) ?? [] }))
+      .forEach(([id, name]) => spalten.push({ id, name, istIch: false, eintraege: eintraege(id) }))
     if ((proPerson.get('')?.length ?? 0) > 0) {
-      spalten.push({ id: '', name: txt('Nicht zugewiesen'), istIch: false, eintraege: proPerson.get('') ?? [] })
+      spalten.push({ id: '', name: txt('Nicht zugewiesen'), istIch: false, eintraege: eintraege('') })
     }
     return spalten
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1202,21 +1222,28 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   // Karte in der Personen-Ansicht: kompakter als die Listenzeile. Was
   // die Spalte schon sagt (die zuständige Person), fehlt; was die
   // Liste über die Gruppe sagt (der Ordner), steht dafür auf der Karte.
-  const renderKarte = (task: TaskRow) => {
+  // Unter-Tasks: steht der Mutter-Task direkt darüber (gleiche Person),
+  // ist die Karte eingerückt wie in der Liste. Gehört er einer anderen
+  // Person, nennt die Karte ihn samt Person — und umgekehrt zählt der
+  // Mutter-Task seine offenen Unter-Tasks auf, die bei anderen liegen.
+  const renderKarte = (task: TaskRow, unterMutter = false) => {
     const mutter = task.parent_task_id ? tasks.find(t => t.id === task.parent_task_id) : null
     const kinder = tasks.filter(t => t.parent_task_id === task.id)
+    const kinderAnderswo = kinder.filter(k => k.status === 'offen' && k.assignee_id !== task.assignee_id)
     const ordner = task.folder_id ? folders.find(f => f.id === task.folder_id) : null
     const ueberfaellig = istUeberfaellig(task)
+    const personVon = (t: TaskRow) => t.assignee_id === userId ? txt('Ich') : (t.assignee?.full_name ?? txt('Nicht zugewiesen'))
     return (
       <button
         key={task.id}
         onClick={() => openDetail(task)}
-        className="w-full text-left bg-white rounded-lg border border-gray-200 shadow-sm p-3 hover:border-[#1a5276] transition-colors flex flex-col gap-1.5"
+        className={`text-left bg-white rounded-lg border border-gray-200 shadow-sm p-3 hover:border-[#1a5276] transition-colors flex flex-col gap-1.5 ${unterMutter ? 'ml-3 w-[calc(100%-0.75rem)] border-l-4 border-l-[#d4e6f1]' : 'w-full'}`}
       >
-        {mutter && (
+        {mutter && !unterMutter && (
           <div className="flex items-center gap-1 text-[11px] text-gray-400 min-w-0">
             <CornerDownRight size={11} className="shrink-0" />
             <span className="truncate">{mutter.titel}</span>
+            <span className="shrink-0">· {personVon(mutter)}</span>
           </div>
         )}
         <div className="font-medium text-sm text-gray-800 line-clamp-3">{task.titel}</div>
@@ -1259,6 +1286,17 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             </span>
           )}
         </div>
+        {kinderAnderswo.length > 0 && (
+          <div className="flex flex-col gap-0.5 pt-1 border-t border-gray-100">
+            {kinderAnderswo.map(k => (
+              <div key={k.id} className="flex items-center gap-1 text-[11px] text-gray-400 min-w-0">
+                <CornerDownRight size={11} className="shrink-0" />
+                <span className="truncate">{k.titel}</span>
+                <span className="shrink-0">· {personVon(k)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </button>
     )
   }
@@ -1457,7 +1495,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   <div className="flex flex-col gap-2 p-2">
                     {spalte.eintraege.length === 0
                       ? <p className="text-xs text-gray-400 py-3 text-center">{txt('Keine offenen Aufgaben.')}</p>
-                      : spalte.eintraege.map(renderKarte)}
+                      : spalte.eintraege.map(({ task, unterMutter }) => renderKarte(task, unterMutter))}
                   </div>
                 </section>
               ))}
