@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, ClipboardList, Users, UserCircle, ChevronRight, Archive, Search, CalendarClock, MessageSquare, FolderOpen, Folder, Tags, X } from 'lucide-react'
+import { Plus, ClipboardList, Users, UserCircle, ChevronRight, Archive, Search, CalendarClock, MessageSquare, FolderOpen, Folder, Tags, X, Mail } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -190,6 +190,37 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
     if (p.get('tagmodus') === 'und') setTagModus('und')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Tägliche Mail mit den eigenen offenen Aufgaben (sql/modul/12).
+  // null = noch nicht geladen oder Tabelle fehlt — dann kein Schalter.
+  // Direkt über den Client der Person: die RLS lässt nur die eigene
+  // Zeile zu, eine eigene Route bräuchte jede App sonst zusätzlich.
+  const [tagesmail, setTagesmail] = useState<boolean | null>(null)
+  const [tagesmailSpeichert, setTagesmailSpeichert] = useState(false)
+
+  useEffect(() => {
+    let abgebrochen = false
+    void (async () => {
+      const { data, error } = await supabase
+        .from('aufgaben_tagesmail')
+        .select('profile_id')
+        .eq('profile_id', userId)
+        .maybeSingle()
+      if (!abgebrochen && !error) setTagesmail(!!data)
+    })()
+    return () => { abgebrochen = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function tagesmailUmschalten(an: boolean) {
+    setTagesmailSpeichert(true)
+    setTagesmail(an)
+    const { error } = an
+      ? await supabase.from('aufgaben_tagesmail').upsert({ profile_id: userId }, { onConflict: 'profile_id', ignoreDuplicates: true })
+      : await supabase.from('aufgaben_tagesmail').delete().eq('profile_id', userId)
+    if (error) setTagesmail(!an)
+    setTagesmailSpeichert(false)
+  }
 
   // Projekte, in denen ich Mitglied bin — nur dort kann ich Aufgaben
   // anlegen (Admins sehen zwar alle Projekte, die Auswahl bleibt aber
@@ -608,7 +639,25 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 sm:py-8">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-        <h1 className="text-2xl font-bold text-[#1a5276]">Projekt-Mgt</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-[#1a5276]">Projekt-Mgt</h1>
+          {tagesmail !== null && (
+            <label
+              className="mt-1 inline-flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer"
+              title={txt('An jedem Arbeitstag eine Mail mit deinen offenen Aufgaben — zuoberst die in den nächsten 5 Arbeitstagen fälligen.')}
+            >
+              <input
+                type="checkbox"
+                checked={tagesmail}
+                disabled={tagesmailSpeichert}
+                onChange={e => void tagesmailUmschalten(e.target.checked)}
+                className="w-4 h-4 accent-[#1a5276]"
+              />
+              <Mail size={13} className="text-gray-400" />
+              {txt('Tägliche Mail mit meinen offenen Aufgaben')}
+            </label>
+          )}
+        </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
           {meineProjekte.length > 0 && (
             <Button

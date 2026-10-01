@@ -13,7 +13,7 @@ Wer den Code in `node_modules/@tomtalent/projekt-mgt` bearbeitet, verliert die �
 ## Aufbau
 
 ```
-sql/modul/    Migrationen des Moduls in Reihenfolge (01…10). In jeder App
+sql/modul/    Migrationen des Moduls in Reihenfolge (01…12). In jeder App
               identisch — hier stehen die Tabellen, Trigger und Policies,
               die dem Projekt-Mgt gehören.
 sql/host/     Was die Gastgeber-App bereitstellen muss. Pro App eine
@@ -67,7 +67,7 @@ projektMgtKonfigurieren({
 **4. Datenbank.** In dieser Reihenfolge:
 
 1. `sql/host/<app>_01_voraussetzungen.sql`
-2. `sql/modul/01` bis `10` der Reihe nach
+2. `sql/modul/01` bis `12` der Reihe nach
 3. `sql/host/<app>_02_profilzugriff.sql`
 
 Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` und `shares_project_with()` aus `modul/01` benutzt. Stünde er in derselben Datei wie Schritt 1, würde ein Ausführen am Stück mit «function does not exist» abbrechen — eine Datei, die man nur teilweise ausführen darf, ist eine Falle.
@@ -115,6 +115,21 @@ Angelegt wird es an drei Stellen: einmalig bei der Migration für alle Berechtig
 **Für die Apps heisst das:** `projects.company_id` kann jetzt null sein. Wo eine Seite daraus etwas ableitet — typischerweise `.eq('company_id', project.company_id)` beim Laden der Tags —, muss der Fall abgefangen werden; ein `eq` gegen null scheitert in PostgREST. Die Typprüfung der App zeigt nach dem Versionssprung genau diese Stellen an.
 
 Die Spalte `persoenlich_fuer` muss eine Seite dagegen **nicht** mitladen. Die Oberfläche erkennt das persönliche Projekt auch an der fehlenden Firma — die beiden Kennzeichen sind dank des CHECK gleichwertig. Wer nur einzelne Spalten auswählt statt `*`, bekommt trotzdem die richtige Darstellung: eigener Block zuoberst statt einer Gruppe «Ohne Firma» mitten in der Liste.
+
+## Tägliche Aufgaben-Mail
+
+In der Übersicht steht unter dem Titel das Häkchen **«Tägliche Mail mit meinen offenen Aufgaben»**. Wer es setzt, bekommt an jedem Arbeitstag eine Mail mit allen ihm zugewiesenen offenen Aufgaben, in zwei Abschnitten:
+
+1. **Überfällig und fällig in den nächsten 5 Arbeitstagen.** Arbeitstage sind Montag bis Freitag; Feiertage kennt das Modul nicht.
+2. **Weitere offene Aufgaben**, höchstens 100. Der Rest steht im Portal.
+
+Aufgaben aus archivierten Projekten fehlen, wie in der Fälligkeitsliste. Wer keine offene Aufgabe hat, bekommt an diesem Tag keine Mail.
+
+Technisch:
+
+- **Abo:** Tabelle `aufgaben_tagesmail` (`sql/modul/12`). Eine Zeile bedeutet abonniert. Die Oberfläche schreibt direkt mit dem Client der Person, und die RLS lässt nur die eigene Zeile zu. Fehlt die Tabelle, blendet die Oberfläche das Häkchen aus.
+- **Versand:** `tagesmailVersenden(serviceRoleDb, { nurProfil?, erzwingen?, heute? })`. Die App ruft das aus einer eigenen, per Maschinen-Token geschützten Route auf, die ein Zeitplan (n8n, Cron) werktags morgens auslöst. Wer heute schon eine Mail bekommen hat, wird übersprungen (`zuletzt_gesendet_am`), ein doppelter Lauf schadet also nicht. Am Wochenende passiert ohne `erzwingen` nichts. `nurProfil` schickt eine Probe-Mail an eine Person, auch ohne Abo.
+- **Für die Startseite einer App:** `faelligkeitsGrenze(heute)` liefert das letzte Datum, das noch zu «bald fällig» gehört. So zeigt die App denselben Ausschnitt wie die Mail.
 
 ## Schlussnotiz
 

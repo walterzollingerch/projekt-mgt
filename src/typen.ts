@@ -100,6 +100,14 @@ export interface ProjektMgtDatabase {
         Update: never
         Relationships: [{ foreignKeyName: 'screening_laeufe_profile_id_fkey'; columns: ['profile_id']; referencedRelation: 'profiles'; referencedColumns: ['id'] }, { foreignKeyName: 'screening_laeufe_project_id_fkey'; columns: ['project_id']; referencedRelation: 'projects'; referencedColumns: ['id'] }]
       }
+      // Abonnement der täglichen Aufgaben-Mail (sql/modul/12). Eine
+      // Zeile = abonniert; `zuletzt_gesendet_am` setzt nur der Versand.
+      aufgaben_tagesmail: {
+        Row: { profile_id: string; created_at: string; zuletzt_gesendet_am: string | null }
+        Insert: { profile_id: string; created_at?: string; zuletzt_gesendet_am?: string | null }
+        Update: { zuletzt_gesendet_am?: string | null }
+        Relationships: [{ foreignKeyName: 'aufgaben_tagesmail_profile_id_fkey'; columns: ['profile_id']; referencedRelation: 'profiles'; referencedColumns: ['id'] }]
+      }
       mcp_audit: {
         Row: { id: string; token_id: string | null; profile_id: string | null; tool: string; argumente: Json | null; erfolg: boolean; fehler: string | null; created_at: string }
         Insert: { id?: string; token_id?: string | null; profile_id?: string | null; tool: string; argumente?: Json | null; erfolg?: boolean; fehler?: string | null; created_at?: string }

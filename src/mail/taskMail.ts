@@ -27,6 +27,12 @@ interface PortalMailParams {
    * ankommt und nicht im Sammelpostfach (RESEND_REPLY_TO).
    */
   antwortAn?: string | null
+  /** Zusätzlicher Inhalt nach dem Einleitungstext (bereits escaptes HTML) */
+  inhaltHtml?: string
+  /** Dasselbe für die Textfassung */
+  inhaltText?: string
+  /** Kleingedrucktes über der Grussformel (bereits escaptes HTML) */
+  fussHtml?: string
 }
 
 // Versendet Benachrichtigungen für das Projekt-Mgt-Modul. Ohne
@@ -51,7 +57,7 @@ async function sendProjektMgtMail(params: PortalMailParams): Promise<boolean> {
   }
 }
 
-async function sendeUeberResend({ to, empfaengerName, subject, intro, buttonLabel, buttonPath, attachments, antwortAn }: PortalMailParams): Promise<boolean> {
+async function sendeUeberResend({ to, empfaengerName, subject, intro, buttonLabel, buttonPath, attachments, antwortAn, inhaltHtml, inhaltText, fussHtml }: PortalMailParams): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
     // Ohne Key wird still übersprungen (der Workflow darf nicht an
@@ -77,7 +83,7 @@ async function sendeUeberResend({ to, empfaengerName, subject, intro, buttonLabe
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     to,
     subject,
-    text: `Hallo ${empfaengerName},\n\n${intro}\n${link && buttonLabel ? `\n${buttonLabel}: ${link}\n` : ''}\nFreundliche Grüsse\n${marke.absender}`,
+    text: `Hallo ${empfaengerName},\n\n${intro}\n${inhaltText ? `\n${inhaltText}\n` : ''}${link && buttonLabel ? `\n${buttonLabel}: ${link}\n` : ''}\nFreundliche Grüsse\n${marke.absender}`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;">
         <div style="background:#1a5276;padding:24px 32px;border-radius:8px 8px 0 0;">
@@ -86,6 +92,7 @@ async function sendeUeberResend({ to, empfaengerName, subject, intro, buttonLabe
         <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;">
           <p style="color:#374151;font-size:15px;">Hallo <strong>${escapeHtml(empfaengerName)}</strong>,</p>
           <p style="color:#374151;font-size:15px;white-space:pre-line;">${escapeHtmlMitLinks(intro)}</p>
+          ${inhaltHtml ?? ''}
           ${link && buttonLabel ? `
           <div style="margin:24px 0;">
             <a href="${link}"
@@ -94,6 +101,7 @@ async function sendeUeberResend({ to, empfaengerName, subject, intro, buttonLabe
             </a>
           </div>` : ''}
           <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;" />
+          ${fussHtml ? `<p style="color:#9ca3af;font-size:12px;margin:0 0 12px;">${fussHtml}</p>` : ''}
           <p style="color:#9ca3af;font-size:13px;margin:0;">Freundliche Grüsse<br/>${escapeHtml(marke.absender)}</p>
         </div>
       </div>`,
@@ -211,6 +219,117 @@ export function sendMemberRemovedMail({ to, empfaengerName, projektName, geaende
     subject: `Projekt «${projektName}»: Mitgliedschaft beendet`,
     intro: `${geaendertVon} hat dich aus dem Projekt «${projektName}» entfernt. Du hast keinen Zugriff mehr auf dessen Tasks.`,
     antwortAn,
+  })
+}
+
+// --- Tägliche Aufgaben-Mail ---
+
+export interface TagesmailTask {
+  id: string
+  titel: string
+  due_date: string
+  project_id: string
+  projektName: string
+  firmaName: string | null
+  istUnterTask: boolean
+}
+
+/** Mehr Zeilen machen die Mail unlesbar — der Rest steht im Portal */
+const TAGESMAIL_MAX_WEITERE = 100
+
+const WOCHENTAG_KURZ = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
+
+function datumMitTag(iso: string): string {
+  const [j, m, d] = iso.slice(0, 10).split('-')
+  const tag = WOCHENTAG_KURZ[new Date(`${iso.slice(0, 10)}T12:00:00Z`).getUTCDay()]
+  return `${tag} ${d}.${m}.${j}`
+}
+
+function tagesmailTabelle(tasks: TagesmailTask[], stichtag: string, basis: string): string {
+  const zeilen = tasks.map(t => {
+    const ueberfaellig = t.due_date < stichtag
+    const heute = t.due_date === stichtag
+    const datumFarbe = ueberfaellig ? '#b91c1c' : heute ? '#b45309' : '#374151'
+    const vermerk = ueberfaellig ? ' · überfällig' : heute ? ' · heute' : ''
+    const projekt = t.firmaName ? `${t.projektName} · ${t.firmaName}` : t.projektName
+    const link = `${basis}/${t.project_id}?task=${t.id}`
+    return `
+      <tr>
+        <td style="padding:8px 10px 8px 0;border-bottom:1px solid #f3f4f6;white-space:nowrap;vertical-align:top;color:${datumFarbe};font-size:13px;${ueberfaellig || heute ? 'font-weight:bold;' : ''}">${escapeHtml(datumMitTag(t.due_date))}${vermerk}</td>
+        <td style="padding:8px 0;border-bottom:1px solid #f3f4f6;vertical-align:top;font-size:14px;">
+          <a href="${link}" style="color:#1a5276;text-decoration:none;font-weight:bold;">${t.istUnterTask ? '↳ ' : ''}${escapeHtml(t.titel)}</a>
+          <div style="color:#6b7280;font-size:12px;margin-top:2px;">${escapeHtml(projekt)}</div>
+        </td>
+      </tr>`
+  }).join('')
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:0 0 8px;">${zeilen}</table>`
+}
+
+function tagesmailText(tasks: TagesmailTask[], stichtag: string): string {
+  return tasks.map(t => {
+    const vermerk = t.due_date < stichtag ? ' (überfällig)' : t.due_date === stichtag ? ' (heute)' : ''
+    return `• ${datumMitTag(t.due_date)}${vermerk} — ${t.titel} [${t.projektName}]`
+  }).join('\n')
+}
+
+// Abonnent:in: Übersicht der eigenen offenen Aufgaben, zuerst die bald fälligen
+export function sendTagesmail({ to, empfaengerName, stichtag, grenze, arbeitstage, baldFaellig, weitere }: {
+  to: string
+  empfaengerName: string
+  stichtag: string
+  grenze: string
+  arbeitstage: number
+  baldFaellig: TagesmailTask[]
+  weitere: TagesmailTask[]
+}): Promise<boolean> {
+  const { appUrl, basisPfad } = hostLesen()
+  const basis = `${appUrl}${basisPfad}`
+  const total = baldFaellig.length + weitere.length
+  const ueberfaellig = baldFaellig.filter(t => t.due_date < stichtag).length
+  const gezeigt = weitere.slice(0, TAGESMAIL_MAX_WEITERE)
+  const rest = weitere.length - gezeigt.length
+
+  const h2 = (text: string) =>
+    `<h2 style="color:#1a5276;font-size:15px;margin:24px 0 6px;">${escapeHtml(text)}</h2>`
+  const titelBald = `Überfällig und fällig in den nächsten ${arbeitstage} Arbeitstagen (bis ${datumMitTag(grenze)})`
+  const titelWeitere = baldFaellig.length > 0 ? 'Weitere offene Aufgaben' : 'Deine offenen Aufgaben'
+
+  const inhaltHtml = [
+    h2(`${titelBald} — ${baldFaellig.length}`),
+    baldFaellig.length > 0
+      ? tagesmailTabelle(baldFaellig, stichtag, basis)
+      : '<p style="color:#6b7280;font-size:14px;margin:0;">Nichts fällig in diesem Zeitraum.</p>',
+    weitere.length > 0 ? h2(`${titelWeitere} — ${weitere.length}`) : '',
+    weitere.length > 0 ? tagesmailTabelle(gezeigt, stichtag, basis) : '',
+    rest > 0 ? `<p style="color:#6b7280;font-size:13px;margin:4px 0 0;">… und ${rest} weitere im Portal.</p>` : '',
+  ].join('')
+
+  const inhaltText = [
+    `${titelBald}:`,
+    baldFaellig.length > 0 ? tagesmailText(baldFaellig, stichtag) : 'Nichts fällig in diesem Zeitraum.',
+    ...(weitere.length > 0 ? ['', `${titelWeitere}:`, tagesmailText(gezeigt, stichtag)] : []),
+    ...(rest > 0 ? [`… und ${rest} weitere im Portal.`] : []),
+  ].join('\n')
+
+  const bald = baldFaellig.length - ueberfaellig
+  const zusammenfassung = [
+    ueberfaellig > 0 ? `${ueberfaellig} überfällig` : '',
+    bald > 0 ? `${bald} bald fällig` : '',
+    `${total} offen`,
+  ].filter(Boolean).join(', ')
+
+  return sendProjektMgtMail({
+    to,
+    empfaengerName,
+    subject: `Deine Aufgaben am ${datumMitTag(stichtag)}: ${zusammenfassung}`,
+    intro: total === 1
+      ? 'Du hast eine offene Aufgabe.'
+      : `Du hast ${total} offene Aufgaben${ueberfaellig > 0 ? `, ${ueberfaellig === 1 ? 'eine davon ist' : `${ueberfaellig} davon sind`} überfällig` : ''}.`,
+    inhaltHtml,
+    inhaltText,
+    buttonLabel: 'Fällige Aufgaben öffnen',
+    buttonPath: `${basisPfad}?tab=faellig&meine=1`,
+    fussHtml: `Du bekommst diese Mail an jedem Arbeitstag, weil du sie im <a href="${basis}" style="color:#9ca3af;">Projekt-Mgt</a> abonniert hast. Abbestellen: dort das Häkchen «Tägliche Mail» entfernen.`,
   })
 }
 
