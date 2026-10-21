@@ -55,28 +55,89 @@ COMMENT ON COLUMN public.profiles.can_manage_projects IS
 -- dem Service-Role-Schluessel oder aus dem SQL-Editor — dort greift
 -- der Schutz bewusst nicht, sonst koennte die Benutzerverwaltung
 -- keine Rechte mehr vergeben.
+--
+-- Stand 21.10.2026: dieselbe Fassung wie live in Terramay
+-- (terramay-horses: migration_benutzer_verwalten.sql und
+-- migration_seguranca_conta_ativa.sql, Punkt 4). Sie schuetzt alle
+-- Rechte-Spalten, die Terramay inzwischen fuehrt, und laesst
+-- Benutzerverwalter (can_manage_users) die Rechte anderer
+-- Nicht-Admins aendern. Die fruehere Fassung dieser Datei kannte nur
+-- acht Spalten — erneutes Einspielen haette can_manage_reservations,
+-- can_manage_users usw. wieder frei setzbar gemacht.
 -- ════════════════════════════════════════════════════════════
 
-CREATE OR REPLACE FUNCTION public.protect_profile_privileges()
-RETURNS TRIGGER AS $$
+-- Die Spalten gehoeren Terramay, nicht dem Modul. Fehlt eine, wuerde
+-- der Trigger erst beim naechsten Profil-Update scheitern — und dann
+-- bei JEDEM. Deshalb lieber hier abbrechen.
+DO $$
+DECLARE
+  fehlend text;
 BEGIN
-  IF (NEW.role                    IS DISTINCT FROM OLD.role
-      OR NEW.is_blocked           IS DISTINCT FROM OLD.is_blocked
-      OR NEW.modules              IS DISTINCT FROM OLD.modules
-      OR NEW.can_prepare_handover IS DISTINCT FROM OLD.can_prepare_handover
-      OR NEW.can_approve_invoices IS DISTINCT FROM OLD.can_approve_invoices
-      OR NEW.receives_invoice_emails IS DISTINCT FROM OLD.receives_invoice_emails
-      OR NEW.can_use_projects     IS DISTINCT FROM OLD.can_use_projects
-      OR NEW.can_manage_projects  IS DISTINCT FROM OLD.can_manage_projects) THEN
-    IF auth.uid() IS NOT NULL AND NOT EXISTS (
-      SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin'
-    ) THEN
-      RAISE EXCEPTION 'Keine Berechtigung, Rollen oder Rechte zu ändern';
-    END IF;
+  SELECT string_agg(c, ', ') INTO fehlend
+    FROM unnest(ARRAY['company_id', 'assigned_car_ids', 'assigned_horse_ids',
+                      'can_use_reservations', 'can_manage_reservations',
+                      'can_manage_schedules', 'can_manage_animals',
+                      'nur_direkte_mails', 'can_manage_users']) AS c
+   WHERE NOT EXISTS (
+     SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'profiles' AND column_name = c
+   );
+  IF fehlend IS NOT NULL THEN
+    RAISE EXCEPTION 'profiles: Spalten fehlen (%) — zuerst die Terramay-Migrationen ausfuehren', fehlend;
   END IF;
-  RETURN NEW;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.is_user_manager()
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles
+     WHERE id = auth.uid() AND can_manage_users AND role <> 'admin' AND NOT is_blocked
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.protect_profile_privileges()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  rechte_geaendert boolean;
+BEGIN
+  rechte_geaendert :=
+       NEW.role                    IS DISTINCT FROM OLD.role
+    OR NEW.is_blocked              IS DISTINCT FROM OLD.is_blocked
+    OR NEW.modules                 IS DISTINCT FROM OLD.modules
+    OR NEW.company_id              IS DISTINCT FROM OLD.company_id
+    OR NEW.assigned_car_ids        IS DISTINCT FROM OLD.assigned_car_ids
+    OR NEW.assigned_horse_ids      IS DISTINCT FROM OLD.assigned_horse_ids
+    OR NEW.can_prepare_handover    IS DISTINCT FROM OLD.can_prepare_handover
+    OR NEW.can_approve_invoices    IS DISTINCT FROM OLD.can_approve_invoices
+    OR NEW.receives_invoice_emails IS DISTINCT FROM OLD.receives_invoice_emails
+    OR NEW.can_use_projects        IS DISTINCT FROM OLD.can_use_projects
+    OR NEW.can_manage_projects     IS DISTINCT FROM OLD.can_manage_projects
+    OR NEW.can_use_reservations    IS DISTINCT FROM OLD.can_use_reservations
+    OR NEW.can_manage_reservations IS DISTINCT FROM OLD.can_manage_reservations
+    OR NEW.can_manage_schedules    IS DISTINCT FROM OLD.can_manage_schedules
+    OR NEW.can_manage_animals      IS DISTINCT FROM OLD.can_manage_animals
+    OR NEW.nur_direkte_mails       IS DISTINCT FROM OLD.nur_direkte_mails
+    OR NEW.can_manage_users        IS DISTINCT FROM OLD.can_manage_users;
+
+  IF NOT rechte_geaendert OR auth.uid() IS NULL THEN  -- Service-Role / SQL
+    RETURN NEW;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin') THEN
+    RETURN NEW;
+  END IF;
+
+  IF public.is_user_manager()
+     AND OLD.id <> auth.uid()
+     AND OLD.role <> 'admin'
+     AND NEW.role IS NOT DISTINCT FROM OLD.role
+     AND NEW.can_manage_users IS NOT DISTINCT FROM OLD.can_manage_users THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'Keine Berechtigung, Rollen oder Rechte zu ändern' USING ERRCODE = '42501';
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
 DROP TRIGGER IF EXISTS protect_profile_privileges ON public.profiles;
 CREATE TRIGGER protect_profile_privileges
@@ -91,29 +152,47 @@ CREATE TRIGGER protect_profile_privileges
 -- statt direkt aus `profiles` — sie gibt bewusst NUR heraus, was
 -- ein Verzeichnis braucht, und nie die Rechte-Matrix.
 --
--- Terramays `profiles` fuehrt keine E-Mail; sie kommt aus
--- auth.users, wie in der bestehenden RPC get_profiles_with_email.
--- Deshalb security_invoker = false: die View muss mit den Rechten
--- ihres Besitzers laufen, sonst kaeme sie an auth.users nicht heran.
--- Der Supabase-Linter meldet das als `security_definer_view` — das
--- ist hier der Zweck, nicht ein Versaeumnis.
+-- Stand 21.10.2026: die Adresse kommt aus profiles.email, einem
+-- Spiegel von auth.users.email (terramay-horses:
+-- migration_profile_email.sql). Damit braucht die View keinen Griff
+-- nach auth.users mehr und laeuft mit security_invoker = true — es
+-- gilt die RLS von `profiles` fuer den Abfragenden (gesperrte Konten
+-- sehen nur sich selbst). Gleiche Fassung wie
+-- migration_verzeichnis_ohne_auth_users.sql; die fruehere Fassung
+-- hier (Besitzerrechte, auth.users) haette beides zurueckgedreht.
 -- ════════════════════════════════════════════════════════════
 
-CREATE OR REPLACE VIEW public.mitarbeiter_verzeichnis
-WITH (security_invoker = false) AS
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'profiles' AND column_name = 'email'
+  ) THEN
+    RAISE EXCEPTION 'profiles.email fehlt — zuerst migration_profile_email.sql (terramay-horses) ausfuehren';
+  END IF;
+END $$;
+
+-- Neu anlegen statt ersetzen: aeltere Fassungen lieferten email als
+-- varchar(255) aus auth.users, CREATE OR REPLACE VIEW kann den Typ
+-- nicht aendern.
+DROP VIEW IF EXISTS public.mitarbeiter_verzeichnis;
+
+CREATE VIEW public.mitarbeiter_verzeichnis
+WITH (security_invoker = true) AS
 SELECT
   p.id,
   p.full_name,
-  u.email,
+  p.email,
   NULL::uuid AS company_id,   -- Terramay ordnet Personen keiner Firma zu
   p.is_blocked,
   (p.role = 'admin' OR p.can_use_projects OR p.can_manage_projects) AS darf_projekte_nutzen
-FROM public.profiles p
-JOIN auth.users u ON u.id = p.id;
+FROM public.profiles p;
 
 REVOKE ALL ON public.mitarbeiter_verzeichnis FROM PUBLIC, anon;
 GRANT SELECT ON public.mitarbeiter_verzeichnis TO authenticated, service_role;
 
 COMMENT ON VIEW public.mitarbeiter_verzeichnis IS
   'Kollegenverzeichnis fuer das Projekt-Mgt. Bewusst OHNE Rechte-Matrix — '
-  'nur Name, E-Mail und die Modul-Zugehoerigkeit.';
+  'nur Name, E-Mail und die Modul-Zugehoerigkeit. Liest die Adresse aus '
+  'profiles.email (Spiegel von auth.users.email), damit die View mit den '
+  'Rechten des Abfragenden laufen kann.';
