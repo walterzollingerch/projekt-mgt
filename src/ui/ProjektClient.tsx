@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp, Sparkles, LayoutList, Columns3, CornerDownRight } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp, Sparkles, LayoutList, Columns3, CornerDownRight, Lock } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -76,6 +76,9 @@ interface TaskRow {
   wiederholung: 'woechentlich' | 'monatlich' | 'jaehrlich' | null
   parent_task_id: string | null
   folder_id: string | null
+  /* Nur für Beteiligte sichtbar (sql/modul/13). Optional: eine Seite,
+     die die Spalte nicht mitlädt, zeigt einfach keine Kennzeichnung. */
+  vertraulich?: boolean
   closed_at: string | null
   assignee: ProfileOption | null
   /* Notiz-Anzahl aus dem Server-Select task_notes(count) */
@@ -148,7 +151,7 @@ interface ProjektClientProps {
   sprache?: string
 }
 
-const emptyTaskForm = { titel: '', beschreibung: '', assignee_id: '', due_date: '', wiederholung: '', folder_id: '', tag_ids: [] as string[] }
+const emptyTaskForm = { titel: '', beschreibung: '', assignee_id: '', due_date: '', wiederholung: '', folder_id: '', tag_ids: [] as string[], vertraulich: false }
 const emptyDetailForm = { ...emptyTaskForm, project_id: '' }
 
 // Tag-IDs einer Aufgabe
@@ -295,7 +298,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const [detailTask, setDetailTask] = useState<TaskRow | null>(null)
   const [detailForm, setDetailForm] = useState(emptyDetailForm)
   // Bestätigung, nachdem ein Task in ein anderes Projekt umgehängt wurde
-  const [moveHinweis, setMoveHinweis] = useState<{ text: string; href: string } | null>(null)
+  const [moveHinweis, setMoveHinweis] = useState<{ text: string; href?: string } | null>(null)
   const [notes, setNotes] = useState<NoteRow[]>([])
   const [notesLoading, setNotesLoading] = useState(false)
   const [noteText, setNoteText] = useState('')
@@ -321,6 +324,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       folder_id: task.folder_id ?? '',
       tag_ids: tagIdsVon(task),
       project_id: task.project_id,
+      vertraulich: !!task.vertraulich,
     })
     setNoteText('')
     setNoteFile(null)
@@ -487,6 +491,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         // Unter-Tasks landen im Ordner ihres Mutter-Tasks
         folder_id: subtaskParent ? null : (taskForm.folder_id || null),
         tag_ids: taskForm.tag_ids,
+        // Unter-Tasks übernehmen den Wert des Mutter-Tasks (DB-Trigger)
+        vertraulich: subtaskParent ? !!subtaskParent.vertraulich : taskForm.vertraulich,
       }),
     })
     const result = await res.json()
@@ -514,6 +520,15 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     setLoading(false)
     if (!res.ok) {
       setError(result.error || txt('Fehler beim Speichern.'))
+      return false
+    }
+    // Vertrauliche Aufgabe abgegeben, ohne Ersteller:in oder
+    // Beobachter:in zu sein: ab jetzt nicht mehr sichtbar
+    if (result.zugriffEntfallen) {
+      const weg = detailTask.id
+      setTasks(prev => prev.filter(t => t.id !== weg && t.parent_task_id !== weg))
+      setDetailTask(null)
+      setMoveHinweis({ text: txt('Gespeichert. Die Aufgabe ist vertraulich und du bist nicht mehr beteiligt — sie ist für dich ab jetzt nicht mehr sichtbar.') })
       return false
     }
     // Notiz-Zähler beibehalten — die API liefert ihn nicht mit
@@ -553,8 +568,16 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       folder_id: zielProjekt ? null : (detailForm.folder_id || null),
       tag_ids: firmenwechsel ? [] : detailForm.tag_ids,
       project_id: detailForm.project_id,
+      // Nur Mutter-Tasks — Unter-Tasks folgen ihnen (DB-Trigger)
+      ...(detailTask.parent_task_id ? {} : { vertraulich: detailForm.vertraulich }),
     })
     if (!ok) return
+
+    // Die Unter-Tasks ziehen die Vertraulichkeit mit (DB-Trigger) —
+    // lokal nachführen, damit die Kennzeichnung stimmt
+    if (!detailTask.parent_task_id) {
+      setTasks(prev => prev.map(t => (t.parent_task_id === taskId ? { ...t, vertraulich: detailForm.vertraulich } : t)))
+    }
 
     // Unter-Tasks liegen immer im Ordner ihrer Mutter (DB-Trigger) —
     // lokal nachziehen, damit sie in der richtigen Gruppe landen
@@ -1151,6 +1174,25 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     : null
   const detailFirmenwechsel = !!detailZielProjekt && detailZielProjekt.company_id !== project.company_id
 
+  // Schalter «Vertraulich» für den Anlegen- und den Detail-Dialog
+  const vertraulichSchalter = (an: boolean, setzen: (an: boolean) => void, mitUnterTasks = false) => (
+    <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={an}
+        onChange={e => setzen(e.target.checked)}
+        className="mt-0.5 w-4 h-4 shrink-0 accent-[#1a5276]"
+      />
+      <span>
+        <span className="inline-flex items-center gap-1 font-medium"><Lock size={13} />{txt('Vertraulich')}</span>
+        <span className="block text-xs text-gray-500">
+          {txt('Titel und Inhalt sehen nur die zuständige Person, wer die Aufgabe erstellt hat, wer bei Notizen informiert wird — und Administratoren. Andere Projektmitglieder sehen die Aufgabe nicht.')}
+          {mitUnterTasks && <> {txt('Die Unter-Tasks ziehen mit.')}</>}
+        </span>
+      </span>
+    </label>
+  )
+
   const renderTaskRow = (task: TaskRow, istKind = false) => (
     <button
       key={task.id}
@@ -1210,6 +1252,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             {noteCount(task)}
           </span>
         )}
+        {task.vertraulich && (
+          <Badge variant="warning" className="whitespace-nowrap">
+            <span title={txt('Nur für Beteiligte sichtbar')} className="inline-flex items-center"><Lock size={11} className="mr-1" />{txt('Vertraulich')}</span>
+          </Badge>
+        )}
         {task.status === 'geschlossen'
           ? <Badge variant="default"><Archive size={11} className="mr-1" />{txt('Archiviert')}</Badge>
           : istUeberfaellig(task)
@@ -1258,6 +1305,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           <span className={ueberfaellig ? 'text-red-600 font-semibold' : ''}>
             {formatDate(task.due_date)}
           </span>
+          {task.vertraulich && (
+            <span className="inline-flex items-center gap-1 text-amber-700" title={txt('Nur für Beteiligte sichtbar')}>
+              <Lock size={12} />{txt('Vertraulich')}
+            </span>
+          )}
           {noteCount(task) > 0 && (
             <span
               role="button"
@@ -1310,7 +1362,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       {moveHinweis && (
         <div className="mb-4 p-3 rounded-md bg-green-50 border border-green-200 text-sm text-green-800 flex items-center justify-between gap-3">
           <span>✓ {moveHinweis.text}</span>
-          <Link href={moveHinweis.href} className="underline shrink-0">{txt('Dort öffnen')}</Link>
+          {moveHinweis.href && <Link href={moveHinweis.href} className="underline shrink-0">{txt('Dort öffnen')}</Link>}
         </div>
       )}
 
@@ -1716,6 +1768,16 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               <p className="text-xs text-gray-500">{txt('Mehrfachauswahl möglich. Tags gelten für alle Projekte von {0}.', project.company?.name ?? txt('dieser Firma'))}</p>
             </div>
           )}
+          {/* Vertraulich — im eigenen Projekt sinnlos (dort sieht ohnehin
+              niemand sonst etwas), bei Unter-Tasks vom Mutter-Task geerbt */}
+          {!istEigenesProjekt && (subtaskParent
+            ? subtaskParent.vertraulich && (
+                <p className="inline-flex items-center gap-1.5 text-xs text-amber-800 bg-amber-50 rounded-md px-3 py-2">
+                  <Lock size={13} className="shrink-0" />
+                  {txt('Vertraulich wie der Mutter-Task — sichtbar nur für die Beteiligten des Mutter-Tasks und dieses Unter-Tasks.')}
+                </p>
+              )
+            : vertraulichSchalter(taskForm.vertraulich, an => setTaskForm(f => ({ ...f, vertraulich: an }))))}
         </div>
       </Modal>
 
@@ -1761,6 +1823,14 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         {detailTask && (
           <div className="flex flex-col gap-4">
             {error && <p className="text-sm text-red-600">{error}</p>}
+            {detailTask.vertraulich && (
+              <p className="self-start inline-flex items-center gap-1.5 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-1">
+                <Lock size={12} />
+                {detailTask.parent_task_id
+                  ? txt('Vertraulich wie der Mutter-Task — nur für Beteiligte sichtbar')
+                  : txt('Vertraulich — nur für Beteiligte sichtbar')}
+              </p>
+            )}
             {detailMutter && (
               <button
                 type="button"
@@ -1916,6 +1986,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     )}
                   </div>
                 )}
+                {!istEigenesProjekt && !detailTask.parent_task_id &&
+                  vertraulichSchalter(detailForm.vertraulich, an => setDetailForm(f => ({ ...f, vertraulich: an })), detailKinder.length > 0)}
               </>
             ) : (
               <div className="text-sm text-gray-700">

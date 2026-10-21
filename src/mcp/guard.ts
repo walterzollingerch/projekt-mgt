@@ -147,15 +147,80 @@ export function verlangeProjektverwalter(id: McpIdentitaet): void {
     throw new ZugriffFehlt('Dafür brauchst du das Recht «Projekte verwalten».')
 }
 
+// ---- Vertrauliche Aufgaben (sql/modul/13) -------------------
+//
+//   ist_task_beteiligt(t)       → istTaskBeteiligt
+//   Policy tasks_select_member  → vertraulichFilter (Listen) und
+//                                 ladeTaskMitZugriff (einzeln)
+//
+// Eine vertrauliche Aufgabe sehen nur die zuständige Person, wer sie
+// erstellt hat, die Beobachter — bei Unter-Aufgaben auch die
+// Beteiligten des Mutter-Tasks — und Administratoren.
+
+/** Ist diese Person an der Aufgabe (oder ihrem Mutter-Task) beteiligt */
+async function istTaskBeteiligt(
+  supabase: Db,
+  id: McpIdentitaet,
+  task: { id: string; assignee_id: string | null; created_by: string | null; parent_task_id: string | null }
+): Promise<boolean> {
+  const ich = id.profile.id
+  if (task.assignee_id === ich || task.created_by === ich) return true
+  const ids = task.parent_task_id ? [task.id, task.parent_task_id] : [task.id]
+  const [{ data: beobachtet }, { data: mutter }] = await Promise.all([
+    supabase.from('task_watchers').select('task_id').in('task_id', ids).eq('profile_id', ich).limit(1),
+    task.parent_task_id
+      ? supabase.from('tasks').select('assignee_id, created_by').eq('id', task.parent_task_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ])
+  if ((beobachtet ?? []).length > 0) return true
+  return !!mutter && (mutter.assignee_id === ich || mutter.created_by === ich)
+}
+
+/**
+ * PostgREST-Filter (`or`) für Aufgabenlisten: blendet vertrauliche
+ * Aufgaben aus, an denen die Person nicht beteiligt ist. null = kein
+ * Filter nötig (Administratoren sehen alles).
+ */
+export async function vertraulichFilter(supabase: Db, id: McpIdentitaet): Promise<string | null> {
+  if (istAdmin(id)) return null
+  const ich = id.profile.id
+  // Vertrauliche Aufgaben, die man über die Beobachtung sieht, und
+  // vertrauliche Mutter-Tasks, die man erstellt hat oder führt — über
+  // beide sieht man auch die Unter-Aufgaben. Nur vertrauliche, damit
+  // die ID-Liste im Filter kurz bleibt (sie steht in der URL).
+  const [{ data: beobachtet }, { data: eigene }] = await Promise.all([
+    supabase
+      .from('task_watchers')
+      .select('task_id, task:tasks!inner(vertraulich)')
+      .eq('profile_id', ich)
+      .eq('task.vertraulich', true)
+      .limit(5000),
+    supabase
+      .from('tasks')
+      .select('id')
+      .eq('vertraulich', true)
+      .is('parent_task_id', null)
+      .or(`assignee_id.eq.${ich},created_by.eq.${ich}`)
+      .limit(5000),
+  ])
+  const ids = [...new Set([...(beobachtet ?? []).map(w => w.task_id), ...(eigene ?? []).map(t => t.id)])]
+  const teile = ['vertraulich.eq.false', `assignee_id.eq.${ich}`, `created_by.eq.${ich}`]
+  if (ids.length > 0) teile.push(`id.in.(${ids.join(',')})`, `parent_task_id.in.(${ids.join(',')})`)
+  return teile.join(',')
+}
+
 /** Task laden und Zugriff prüfen; liefert Task samt Projekt-ID */
 export async function ladeTaskMitZugriff(supabase: Db, id: McpIdentitaet, taskId: string) {
   const { data: task } = await supabase
     .from('tasks')
-    .select('id, project_id, titel, status, parent_task_id')
+    .select('id, project_id, titel, status, parent_task_id, vertraulich, assignee_id, created_by')
     .eq('id', taskId)
     .maybeSingle()
   if (!task) throw new ZugriffFehlt('Aufgabe nicht gefunden.')
   await verlangeProjektZugriff(supabase, id, task.project_id)
+  // Wer nicht beteiligt ist, erfährt nicht einmal, dass es sie gibt
+  if (task.vertraulich && !istAdmin(id) && !(await istTaskBeteiligt(supabase, id, task)))
+    throw new ZugriffFehlt('Aufgabe nicht gefunden.')
   return task
 }
 

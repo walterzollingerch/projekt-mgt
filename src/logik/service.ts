@@ -595,6 +595,9 @@ export interface CreateTaskInput {
   parent_task_id?: unknown
   folder_id?: unknown
   tag_ids?: unknown
+  /** true = nur für Beteiligte sichtbar (sql/modul/13). Unter-Tasks
+   *  übernehmen den Wert ihres Mutter-Tasks — hier ignoriert. */
+  vertraulich?: unknown
 }
 
 /**
@@ -634,6 +637,8 @@ export async function createTask(
     return fail(400, 'Ungültiger Mutter-Task.')
   if (folder_id && (typeof folder_id !== 'string' || !UUID_RE.test(folder_id)))
     return fail(400, 'Ungültiger Ordner.')
+  if (input.vertraulich !== undefined && input.vertraulich !== null && typeof input.vertraulich !== 'boolean')
+    return fail(400, 'Ungültiger Wert für «vertraulich».')
 
   // Tags vorab prüfen — sie müssen zur Firma des Projekts gehören
   let tagIds: string[] = []
@@ -659,6 +664,8 @@ export async function createTask(
       parent_task_id: (parent_task_id as string) || null,
       // Unter-Tasks übernehmen den Ordner des Mutter-Tasks (DB-Trigger)
       folder_id: parent_task_id ? null : ((folder_id as string) || null),
+      // Unter-Tasks erben den Wert des Mutter-Tasks (DB-Trigger)
+      vertraulich: input.vertraulich === true,
       created_by: userId,
     })
     .select(TASK_SELECT)
@@ -697,6 +704,7 @@ export async function createTask(
       zugewiesenVon: akteur.name,
       antwortAn: akteur.email,
       taskPath: `${hostLesen().basisPfad}/${task.project_id}?task=${task.id}`,
+      vertraulich: task.vertraulich,
     })
   }
 
@@ -712,6 +720,8 @@ export interface UpdateTaskInput {
   folder_id?: unknown
   project_id?: unknown
   tag_ids?: unknown
+  /** Nur bei Mutter-Tasks wirksam; die Unter-Tasks ziehen nach (DB-Trigger) */
+  vertraulich?: unknown
   action?: unknown
 }
 
@@ -735,7 +745,7 @@ export async function updateTask(
   // Bisherigen Stand laden (für Änderungs-Diff, Umhängen und Mails)
   const { data: current } = await supabase
     .from('tasks')
-    .select('id, titel, due_date, assignee_id, status, project_id, parent_task_id, assignee:profiles!tasks_assignee_id_fkey(id, full_name, email)')
+    .select('id, titel, due_date, assignee_id, status, project_id, parent_task_id, vertraulich, assignee:profiles!tasks_assignee_id_fkey(id, full_name, email)')
     .eq('id', id)
     .single()
   if (!current) return fail(404, 'Task nicht gefunden.')
@@ -748,6 +758,7 @@ export async function updateTask(
     wiederholung?: Wiederholung | null
     folder_id?: string | null
     project_id?: string
+    vertraulich?: boolean
     status?: 'offen' | 'geschlossen'
     closed_at?: string | null
     closed_by?: string | null
@@ -782,6 +793,13 @@ export async function updateTask(
     if (input.folder_id !== null && (typeof input.folder_id !== 'string' || !UUID_RE.test(input.folder_id)))
       return fail(400, 'Ungültiger Ordner.')
     payload.folder_id = input.folder_id as string | null
+  }
+  // Vertraulichkeit. Unter-Tasks folgen ihrem Mutter-Task — der
+  // DB-Trigger würde einen abweichenden Wert ohnehin überschreiben.
+  if (input.vertraulich !== undefined && input.vertraulich !== null) {
+    if (typeof input.vertraulich !== 'boolean') return fail(400, 'Ungültiger Wert für «vertraulich».')
+    if (!current.parent_task_id && input.vertraulich !== current.vertraulich)
+      payload.vertraulich = input.vertraulich
   }
   // Umhängen in ein anderes Projekt. Über die Web-App verlangt die
   // RLS Mitgliedschaft in beiden Projekten (bzw. Admin-Rolle), über
@@ -864,6 +882,17 @@ export async function updateTask(
     }
   }
 
+  // Ohne Umhängen werden die Tags VOR der Zeile gesetzt: Wer eine
+  // vertrauliche Aufgabe abgibt, ist danach womöglich nicht mehr
+  // beteiligt und dürfte ihre Tags dann nicht mehr ändern (RLS über
+  // is_member_of_task). Beim Umhängen bleibt es bei «danach» — dort
+  // prüft der Tag-Trigger gegen die Firma des neuen Projekts.
+  const tagsVorher = !!tagIds && !zielProjekt
+  if (tagsVorher && tagIds) {
+    const tagFehler = await setzeTaskTags(supabase, userId, id, tagIds)
+    if (tagFehler) console.error('Tags konnten nicht gesetzt werden:', id)
+  }
+
   // Werden nur Tags geändert, bleibt die Task-Zeile unangetastet —
   // ein UPDATE ohne Spalten lehnt PostgREST ab
   const { data: task, error } = Object.keys(payload).length > 0
@@ -888,6 +917,16 @@ export async function updateTask(
         ? error.message.replace(/^.*?:\s*/, '')
         : 'Task konnte nicht gespeichert werden.'
     return fail(400, msg)
+  }
+
+  // Vertrauliche Aufgabe abgegeben: wer weder erstellt hat noch
+  // beobachtet, sieht sie ab jetzt nicht mehr. Die Oberfläche nimmt
+  // sie dann aus der Liste. Über MCP (Service Role) ist das immer
+  // false — dort prüft der Guard beim nächsten Zugriff.
+  let zugriffEntfallen = false
+  if (task.vertraulich) {
+    const { data: nochSichtbar } = await supabase.from('tasks').select('id').eq('id', id).maybeSingle()
+    zugriffEntfallen = !nochSichtbar
   }
 
   // Umhängen: Unter-Tasks nachziehen (erst nach dem Mutter-Task —
@@ -924,11 +963,11 @@ export async function updateTask(
   // Tags setzen. Beim Umhängen in eine andere Firma räumt zusätzlich
   // ein DB-Trigger die dort ungültigen Zuordnungen weg — deshalb die
   // Tags danach frisch laden statt aus dem Select oben zu übernehmen.
-  if (tagIds) {
+  if (tagIds && !tagsVorher) {
     const tagFehler = await setzeTaskTags(supabase, userId, id, tagIds)
     if (tagFehler) console.error('Tags konnten nicht gesetzt werden:', id)
   }
-  if (tagIds || zielProjekt) {
+  if ((tagIds || zielProjekt) && !zugriffEntfallen) {
     task.tags = await ladeTaskTags(supabase, id)
   }
 
@@ -954,6 +993,7 @@ export async function updateTask(
         wiederholung: task.wiederholung,
         // Der Folge-Task bleibt im gleichen Ordner
         folder_id: task.folder_id,
+        vertraulich: task.vertraulich,
         created_by: userId,
       })
       .select(TASK_SELECT)
@@ -962,6 +1002,26 @@ export async function updateTask(
       console.error('Folge-Task konnte nicht erstellt werden:', folgeError)
     } else {
       folgeTask = neu
+      // Vertraulicher Folge-Task: Ersteller ist, wer geschlossen hat.
+      // Damit der Kreis der Beteiligten derselbe bleibt, werden die
+      // Beobachter übernommen und wer den Vorgänger erstellt hat als
+      // Beobachter ergänzt — sonst ginge dieser Person der Zugriff verloren.
+      if (task.vertraulich && neu) {
+        const { data: bisher } = await supabase.from('task_watchers').select('profile_id').eq('task_id', id)
+        const beobachter = [...new Set([
+          ...(bisher ?? []).map(w => w.profile_id),
+          ...(task.created_by ? [task.created_by] : []),
+        ])].filter(pid => pid !== userId && pid !== neu.assignee_id)
+        if (beobachter.length > 0) {
+          const { error: watcherError } = await supabase
+            .from('task_watchers')
+            .upsert(
+              beobachter.map(profile_id => ({ task_id: neu.id, profile_id, added_by: userId })),
+              { onConflict: 'task_id,profile_id', ignoreDuplicates: true }
+            )
+          if (watcherError) console.error('Beobachter des Folge-Tasks nicht übernommen:', watcherError)
+        }
+      }
       // Der Folge-Task erbt die Tags des geschlossenen Tasks
       const geerbt = (task.tags ?? []).map(z => z.tag?.id).filter((tid): tid is string => !!tid)
       if (geerbt.length > 0 && folgeTask) {
@@ -981,6 +1041,10 @@ export async function updateTask(
     aenderungen.push('Status: reaktiviert (offen)')
   if (zielProjekt)
     aenderungen.push(`Projekt gewechselt — die Aufgabe liegt jetzt im Projekt «${projektName}»`)
+  if (payload.vertraulich === true)
+    aenderungen.push('Vertraulich: nur noch für Beteiligte sichtbar')
+  if (payload.vertraulich === false)
+    aenderungen.push('Nicht mehr vertraulich: für alle Projektmitglieder sichtbar')
 
   // Awaited — auf Vercel wird die Function nach der Response
   // eingefroren, nicht awaitete Promises laufen sonst nie. Fehler
@@ -1010,6 +1074,7 @@ export async function updateTask(
           geschlossenVon: akteur.name,
           antwortAn: akteur.email,
           taskPath,
+          vertraulich: task.vertraulich,
         })
       ))
     }
@@ -1026,6 +1091,7 @@ export async function updateTask(
         zugewiesenVon: akteur.name,
         antwortAn: akteur.email,
         taskPath: `${hostLesen().basisPfad}/${folgeTask.project_id}?task=${folgeTask.id}`,
+        vertraulich: folgeTask.vertraulich,
       })
     }
   }
@@ -1046,6 +1112,7 @@ export async function updateTask(
           zugewiesenVon: akteur.name,
           antwortAn: akteur.email,
           taskPath,
+          vertraulich: task.vertraulich,
         })
       }
       // … der bisherige die Abgabe-Mail
@@ -1057,6 +1124,7 @@ export async function updateTask(
           projektName,
           geaendertVon: akteur.name,
           antwortAn: akteur.email,
+          vertraulich: task.vertraulich,
         })
       }
     } else if (aenderungen.length > 0 && task.assignee && task.assignee.id !== userId) {
@@ -1070,11 +1138,12 @@ export async function updateTask(
         geaendertVon: akteur.name,
         antwortAn: akteur.email,
         taskPath,
+        vertraulich: task.vertraulich,
       })
     }
   }
 
-  return done({ task, folgeTask })
+  return done({ task, folgeTask, zugriffEntfallen })
 }
 
 // Task löschen
@@ -1194,7 +1263,7 @@ export async function addTaskNote(
   const [{ data: task }, { data: watchers }, akteur] = await Promise.all([
     supabase
       .from('tasks')
-      .select('id, titel, project_id, project:projects(name), assignee:profiles!tasks_assignee_id_fkey(id, full_name, email), ersteller:profiles!tasks_created_by_fkey(id, full_name, email)')
+      .select('id, titel, project_id, vertraulich, project:projects(name), assignee:profiles!tasks_assignee_id_fkey(id, full_name, email), ersteller:profiles!tasks_created_by_fkey(id, full_name, email)')
       .eq('id', id)
       .single(),
     supabase
@@ -1248,6 +1317,7 @@ export async function addTaskNote(
         taskPath: `${hostLesen().basisPfad}/${task.project_id}?task=${task.id}`,
         attachments,
         abschluss: !!geschlossenerTask,
+        vertraulich: task.vertraulich,
       })
     ))
   }

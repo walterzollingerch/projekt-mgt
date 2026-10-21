@@ -33,7 +33,15 @@ interface PortalMailParams {
   inhaltText?: string
   /** Kleingedrucktes über der Grussformel (bereits escaptes HTML) */
   fussHtml?: string
+  /**
+   * Die Aufgabe ist vertraulich (sql/modul/13): Betreff mit Vermerk
+   * und ein Hinweis, dass nur Beteiligte sie sehen.
+   */
+  vertraulich?: boolean
 }
+
+const VERTRAULICH_HINWEIS =
+  'Diese Aufgabe ist vertraulich: Im Portal sehen sie nur die zuständige Person, wer sie erstellt hat und wer bei Notizen informiert wird. Bitte nicht weiterleiten.'
 
 // Versendet Benachrichtigungen für das Projekt-Mgt-Modul. Ohne
 // RESEND_API_KEY wird still übersprungen (der Workflow darf nicht
@@ -57,7 +65,7 @@ async function sendProjektMgtMail(params: PortalMailParams): Promise<boolean> {
   }
 }
 
-async function sendeUeberResend({ to, empfaengerName, subject, intro, buttonLabel, buttonPath, attachments, antwortAn, inhaltHtml, inhaltText, fussHtml }: PortalMailParams): Promise<boolean> {
+async function sendeUeberResend({ to, empfaengerName, subject: betreff, intro, buttonLabel, buttonPath, attachments, antwortAn, inhaltHtml, inhaltText: inhalt, fussHtml: fuss, vertraulich }: PortalMailParams): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
     // Ohne Key wird still übersprungen (der Workflow darf nicht an
@@ -66,6 +74,14 @@ async function sendeUeberResend({ to, empfaengerName, subject, intro, buttonLabe
     console.error('Projekt-Mgt-Mail übersprungen: RESEND_API_KEY ist nicht gesetzt.')
     return false
   }
+
+  const subject = vertraulich ? `[Vertraulich] ${betreff}` : betreff
+  const fussHtml = vertraulich
+    ? `<strong>${escapeHtml(VERTRAULICH_HINWEIS)}</strong>${fuss ? `<br/><br/>${fuss}` : ''}`
+    : fuss
+  const inhaltText = vertraulich
+    ? `${inhalt ? `${inhalt}\n\n` : ''}${VERTRAULICH_HINWEIS}`
+    : inhalt
 
   const resend = new Resend(apiKey)
   const { appUrl, marke } = hostLesen()
@@ -125,10 +141,11 @@ interface TaskAssignedMailParams {
   zugewiesenVon: string
   taskPath: string
   antwortAn?: string | null
+  vertraulich?: boolean
 }
 
 // Neuer Verantwortlicher: Task wurde dir zugewiesen
-export function sendTaskAssignedMail({ to, empfaengerName, taskTitel, projektName, dueDate, zugewiesenVon, taskPath, antwortAn }: TaskAssignedMailParams): Promise<boolean> {
+export function sendTaskAssignedMail({ to, empfaengerName, taskTitel, projektName, dueDate, zugewiesenVon, taskPath, antwortAn, vertraulich }: TaskAssignedMailParams): Promise<boolean> {
   const faellig = formatDatum(dueDate)
   return sendProjektMgtMail({
     to,
@@ -138,22 +155,24 @@ export function sendTaskAssignedMail({ to, empfaengerName, taskTitel, projektNam
     buttonLabel: 'Aufgabe öffnen',
     buttonPath: taskPath,
     antwortAn,
+    vertraulich,
   })
 }
 
 // Bisheriger Verantwortlicher: Verantwortung wurde entzogen
-export function sendTaskUnassignedMail({ to, empfaengerName, taskTitel, projektName, geaendertVon, antwortAn }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; geaendertVon: string; antwortAn?: string | null }): Promise<boolean> {
+export function sendTaskUnassignedMail({ to, empfaengerName, taskTitel, projektName, geaendertVon, antwortAn, vertraulich }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; geaendertVon: string; antwortAn?: string | null; vertraulich?: boolean }): Promise<boolean> {
   return sendProjektMgtMail({
     to,
     empfaengerName,
     subject: `Aufgabe abgegeben: ${taskTitel}`,
     intro: `${geaendertVon} hat die Verantwortung für die Aufgabe «${taskTitel}» im Projekt «${projektName}» neu vergeben. Du bist nicht mehr zuständig.`,
     antwortAn,
+    vertraulich,
   })
 }
 
 // Verantwortlicher: Titel, Fälligkeit oder Status wurden geändert
-export function sendTaskChangedMail({ to, empfaengerName, taskTitel, projektName, aenderungen, geaendertVon, taskPath, antwortAn }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; aenderungen: string[]; geaendertVon: string; taskPath: string; antwortAn?: string | null }): Promise<boolean> {
+export function sendTaskChangedMail({ to, empfaengerName, taskTitel, projektName, aenderungen, geaendertVon, taskPath, antwortAn, vertraulich }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; aenderungen: string[]; geaendertVon: string; taskPath: string; antwortAn?: string | null; vertraulich?: boolean }): Promise<boolean> {
   return sendProjektMgtMail({
     to,
     empfaengerName,
@@ -162,11 +181,12 @@ export function sendTaskChangedMail({ to, empfaengerName, taskTitel, projektName
     buttonLabel: 'Aufgabe öffnen',
     buttonPath: taskPath,
     antwortAn,
+    vertraulich,
   })
 }
 
 // Ersteller + Zuständige(r): Aufgabe wurde geschlossen und archiviert
-export function sendTaskClosedMail({ to, empfaengerName, taskTitel, projektName, geschlossenVon, taskPath, antwortAn }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; geschlossenVon: string; taskPath: string; antwortAn?: string | null }): Promise<boolean> {
+export function sendTaskClosedMail({ to, empfaengerName, taskTitel, projektName, geschlossenVon, taskPath, antwortAn, vertraulich }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; geschlossenVon: string; taskPath: string; antwortAn?: string | null; vertraulich?: boolean }): Promise<boolean> {
   return sendProjektMgtMail({
     to,
     empfaengerName,
@@ -175,6 +195,7 @@ export function sendTaskClosedMail({ to, empfaengerName, taskTitel, projektName,
     buttonLabel: 'Aufgabe öffnen',
     buttonPath: taskPath,
     antwortAn,
+    vertraulich,
   })
 }
 
@@ -182,7 +203,7 @@ export function sendTaskClosedMail({ to, empfaengerName, taskTitel, projektName,
 // Ist die Notiz eine Schlussnotiz, meldet dieselbe Mail zugleich den
 // Abschluss — sonst bekämen Ersteller und Zuständige(r) zwei Mails,
 // die dasselbe erzählen.
-export function sendTaskNoteMail({ to, empfaengerName, taskTitel, projektName, notizText, autor, taskPath, attachments, antwortAn, abschluss }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; notizText: string; autor: string; taskPath: string; attachments?: MailAttachment[]; antwortAn?: string | null; abschluss?: boolean }): Promise<boolean> {
+export function sendTaskNoteMail({ to, empfaengerName, taskTitel, projektName, notizText, autor, taskPath, attachments, antwortAn, abschluss, vertraulich }: { to: string; empfaengerName: string; taskTitel: string; projektName: string; notizText: string; autor: string; taskPath: string; attachments?: MailAttachment[]; antwortAn?: string | null; abschluss?: boolean; vertraulich?: boolean }): Promise<boolean> {
   const anhang = attachments && attachments.length > 0 ? `\n\nDatei im Anhang: ${attachments.map(a => a.filename).join(', ')}` : ''
   return sendProjektMgtMail({
     to,
@@ -195,6 +216,7 @@ export function sendTaskNoteMail({ to, empfaengerName, taskTitel, projektName, n
     buttonPath: taskPath,
     attachments,
     antwortAn,
+    vertraulich,
   })
 }
 

@@ -24,6 +24,8 @@ Begriffe: Ein Projekt gehört zu einer Firma und hat Mitglieder. Aufgaben (Tasks
 
 Eigene Tasks: Jede Person hat zusätzlich ein persönliches Projekt «Eigene Tasks» (in list_projects an «persoenlich: true» erkennbar). Es gehört zu keiner Firma, hat genau ein Mitglied und ist für alle anderen unsichtbar — auch für Administratoren. Aufgaben darin sind immer der Person selbst zugewiesen, tragen keine Tags und lösen keine E-Mails aus. Was nur die Person selbst betrifft, gehört dorthin und nicht in ein Firmenprojekt.
 
+Vertraulich: Eine Aufgabe kann «vertraulich» sein (Feld vertraulich in den Aufgaben, setzbar mit create_task und update_task). Dann sehen sie samt Notizen nur die zuständige Person, wer sie erstellt hat, die Beobachter und Administratoren — andere Projektmitglieder nicht. Unter-Aufgaben folgen ihrem Mutter-Task. Inhalte vertraulicher Aufgaben nicht an Personen weitergeben, die nicht beteiligt sind.
+
 Vorgehen: Beginne mit list_projects, um IDs zu bekommen. Alle Parameter, die auf «_id» enden, erwarten die UUID aus dem Portal, niemals einen Namen — schlage IDs bei Bedarf mit list_projects, list_people, list_tags oder search_tasks nach.
 
 Wichtig: Änderungen wirken sofort im Portal und lösen automatisch E-Mails an die betroffenen Personen aus (Zuweisung, Änderung, Schliessen, neue Notiz). Frage im Zweifel nach, bevor du schreibst.`

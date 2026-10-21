@@ -13,7 +13,7 @@ Wer den Code in `node_modules/@tomtalent/projekt-mgt` bearbeitet, verliert die �
 ## Aufbau
 
 ```
-sql/modul/    Migrationen des Moduls in Reihenfolge (01…12). In jeder App
+sql/modul/    Migrationen des Moduls in Reihenfolge (01…13). In jeder App
               identisch — hier stehen die Tabellen, Trigger und Policies,
               die dem Projekt-Mgt gehören.
 sql/host/     Was die Gastgeber-App bereitstellen muss. Pro App eine
@@ -67,7 +67,7 @@ projektMgtKonfigurieren({
 **4. Datenbank.** In dieser Reihenfolge:
 
 1. `sql/host/<app>_01_voraussetzungen.sql`
-2. `sql/modul/01` bis `12` der Reihe nach
+2. `sql/modul/01` bis `13` der Reihe nach
 3. `sql/host/<app>_02_profilzugriff.sql`
 
 Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` und `shares_project_with()` aus `modul/01` benutzt. Stünde er in derselben Datei wie Schritt 1, würde ein Ausführen am Stück mit «function does not exist» abbrechen — eine Datei, die man nur teilweise ausführen darf, ist eine Falle.
@@ -130,6 +130,26 @@ Technisch:
 - **Abo:** Tabelle `aufgaben_tagesmail` (`sql/modul/12`). Eine Zeile bedeutet abonniert. Die Oberfläche schreibt direkt mit dem Client der Person, und die RLS lässt nur die eigene Zeile zu. Fehlt die Tabelle, blendet die Oberfläche das Häkchen aus.
 - **Versand:** `tagesmailVersenden(serviceRoleDb, { nurProfil?, erzwingen?, heute? })`. Die App ruft das aus einer eigenen, per Maschinen-Token geschützten Route auf, die ein Zeitplan (n8n, Cron) werktags morgens auslöst. Wer heute schon eine Mail bekommen hat, wird übersprungen (`zuletzt_gesendet_am`), ein doppelter Lauf schadet also nicht. Am Wochenende passiert ohne `erzwingen` nichts. `nurProfil` schickt eine Probe-Mail an eine Person, auch ohne Abo.
 - **Für die Startseite einer App:** `faelligkeitsGrenze(heute)` liefert das letzte Datum, das noch zu «bald fällig» gehört. So zeigt die App denselben Ausschnitt wie die Mail.
+
+## Vertrauliche Aufgaben
+
+Im Anlegen- und im Detail-Dialog steht der Schalter **«Vertraulich»**. Eine vertrauliche Aufgabe sehen samt Titel, Beschreibung, Notizen, Anhängen, Tags und Beobachtern nur:
+
+- die zuständige Person,
+- wer sie erstellt hat,
+- wer bei neuen Notizen informiert wird (Beobachter),
+- Administratoren — wie überall ausser im persönlichen Projekt anderer.
+
+Übrige Projektmitglieder und Projektverwalter sehen sie gar nicht, auch nicht als Platzhalter, und können sie weder ändern noch löschen. In Listen, auf Karten und im Detail trägt sie die Kennzeichnung «Vertraulich», Mails den Betreff-Vermerk «[Vertraulich]» und einen Hinweis.
+
+Regeln, alle in `sql/modul/13` erzwungen:
+
+- **Unter-Tasks folgen dem Mutter-Task.** Ein Trigger setzt den Wert beim Anlegen und zieht ihn beim Umstellen nach. Wer am Mutter-Task beteiligt ist, sieht auch dessen Unter-Tasks.
+- **Wer eine Person informieren lässt, macht sie zur Beteiligten.** Sie sieht die Aufgabe ab dann.
+- **Wer abgibt, verliert die Sicht**, sofern die Person die Aufgabe weder erstellt hat noch beobachtet. Das Speichern selbst klappt; `updateTask` meldet `zugriffEntfallen` und die Oberfläche nimmt die Aufgabe aus der Liste.
+- **Wiederholung:** Der Folge-Task bleibt vertraulich. Er übernimmt die Beobachter, und wer den Vorgänger erstellt hat, wird als Beobachter eingetragen. So bleibt der Kreis derselbe.
+
+Technisch prüfen `tasks_select_member` und `tasks_update_member` die Beteiligung, dazu `is_member_of_task()`. Auf dieser Funktion bauen die Policies von Notizen, Beobachtern, Tag-Zuordnungen und Anhängen auf, die damit ohne eigene Änderung folgen. Der MCP-Guard bildet das mit `vertraulichFilter()` und `ladeTaskMitZugriff()` nach. Eine App, die Aufgaben mit Service Role liest und weitergibt (Spiegelung nach Jira, Exporte), muss vertrauliche selbst auslassen.
 
 ## Schlussnotiz
 

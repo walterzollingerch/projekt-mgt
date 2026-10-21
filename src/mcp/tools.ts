@@ -34,6 +34,7 @@ import {
   verlangeTaskLoeschung,
   verlangeTagPflege,
   verlangeTagSicht,
+  vertraulichFilter,
 } from './guard'
 
 // ============================================================
@@ -110,6 +111,7 @@ interface RohTask {
   closed_at?: string | null
   project_id: string
   assignee_id?: string | null
+  vertraulich?: boolean
 }
 
 type NamenKarte = Map<string, string>
@@ -124,6 +126,7 @@ function taskAusgabe(t: RohTask, projekte: NamenKarte, personen: NamenKarte, ord
     faellig_am: t.due_date,
     ueberfaellig: t.status === 'offen' && t.due_date < heute(),
     wiederholung: t.wiederholung ?? null,
+    vertraulich: !!t.vertraulich,
     projekt: { id: t.project_id, name: projekte.get(t.project_id) ?? null },
     ordner: t.folder_id ? { id: t.folder_id, name: ordner.get(t.folder_id) ?? null } : null,
     tags: (tags.get(t.id) ?? []).map(g => ({ id: g.id, name: g.name })),
@@ -209,7 +212,7 @@ async function taskIdsMitTags(supabase: Db, tagIds: string[]): Promise<string[]>
   return [...new Set((data ?? []).map(z => z.task_id))]
 }
 
-const TASK_FELDER = 'id, project_id, titel, beschreibung, assignee_id, due_date, status, wiederholung, parent_task_id, folder_id, closed_at'
+const TASK_FELDER = 'id, project_id, titel, beschreibung, assignee_id, due_date, status, wiederholung, parent_task_id, folder_id, vertraulich, closed_at'
 
 /**
  * Wertliste für den PostgREST-Filter `not.in`. Wird für die
@@ -291,11 +294,15 @@ export const TOOLS: ToolDef[] = [
 
       const ids = liste.map(p => p.id)
       const firmenIds = [...new Set(liste.map(p => p.company_id).filter((c): c is string => !!c))]
+      // Vertrauliche Aufgaben ohne eigene Beteiligung zählen nicht mit
+      const filter = await vertraulichFilter(supabase, identitaet)
+      let offeneQ = supabase.from('tasks').select('project_id, due_date').eq('status', 'offen').in('project_id', ids)
+      if (filter) offeneQ = offeneQ.or(filter)
       const [{ data: firmen }, { data: offeneTasks }] = await Promise.all([
         firmenIds.length
           ? supabase.from('companies').select('id, name').in('id', firmenIds)
           : Promise.resolve({ data: [] as { id: string; name: string }[] }),
-        supabase.from('tasks').select('project_id, due_date').eq('status', 'offen').in('project_id', ids),
+        offeneQ,
       ])
       const firmenName = new Map((firmen ?? []).map(f => [f.id, f.name]))
       const stichtag = heute()
@@ -333,6 +340,9 @@ export const TOOLS: ToolDef[] = [
       const projectId = uuid(args, 'project_id')
       await verlangeProjektZugriff(supabase, identitaet, projectId)
 
+      const filter = await vertraulichFilter(supabase, identitaet)
+      let tasksQ = supabase.from('tasks').select('status, due_date').eq('project_id', projectId)
+      if (filter) tasksQ = tasksQ.or(filter)
       const [{ data: projekt }, { data: mitglieder }, { data: ordner }, { data: tasks }] = await Promise.all([
         supabase.from('projects').select('id, name, beschreibung, status, company_id, persoenlich_fuer, created_at').eq('id', projectId).single(),
         supabase
@@ -340,7 +350,7 @@ export const TOOLS: ToolDef[] = [
           .select('profile:profiles!project_members_profile_id_fkey(id, full_name, email)')
           .eq('project_id', projectId),
         supabase.from('project_folders').select('id, name, position').eq('project_id', projectId).order('position'),
-        supabase.from('tasks').select('status, due_date').eq('project_id', projectId),
+        tasksQ,
       ])
       if (!projekt) throw new ToolFehler('Projekt nicht gefunden.')
 
@@ -406,6 +416,10 @@ export const TOOLS: ToolDef[] = [
           if (versteckt) q = q.not('project_id', 'in', versteckt)
         }
       }
+
+      // Vertrauliche Aufgaben nur, wenn man beteiligt ist (Admins: alle)
+      const filter = await vertraulichFilter(supabase, identitaet)
+      if (filter) q = q.or(filter)
 
       const status = typeof args.status === 'string' ? args.status : 'offen'
       if (status === 'offen' || status === 'geschlossen') q = q.eq('status', status)
@@ -512,6 +526,8 @@ export const TOOLS: ToolDef[] = [
         ? nichtIn(await fremdePersoenlicheProjektIds(supabase, identitaet))
         : null
       const limit = Math.min(typeof args.limit === 'number' && args.limit > 0 ? args.limit : 30, 100)
+      // Vertrauliche Aufgaben nur, wenn man beteiligt ist (Admins: alle)
+      const filter = await vertraulichFilter(supabase, identitaet)
 
       // Tag-Filter: Treffer auf Aufgaben mit einem dieser Tags eingrenzen
       const filterTags = tagIdsAusArgs(args)
@@ -527,6 +543,7 @@ export const TOOLS: ToolDef[] = [
         .or(`titel.ilike.%${begriff}%,beschreibung.ilike.%${begriff}%`)
       if (sichtbar !== null) direkt = direkt.in('project_id', sichtbar)
       if (versteckt) direkt = direkt.not('project_id', 'in', versteckt)
+      if (filter) direkt = direkt.or(filter)
       if (args.nur_offene === true) direkt = direkt.eq('status', 'offen')
       if (getaggt !== null) direkt = direkt.in('id', getaggt)
 
@@ -549,6 +566,7 @@ export const TOOLS: ToolDef[] = [
           let q = supabase.from('tasks').select(TASK_FELDER).in('id', offeneIds)
           if (sichtbar !== null) q = q.in('project_id', sichtbar)
           if (versteckt) q = q.not('project_id', 'in', versteckt)
+          if (filter) q = q.or(filter)
           if (args.nur_offene === true) q = q.eq('status', 'offen')
           const { data: weitere } = await q.limit(limit)
           for (const t of weitere ?? []) {
@@ -648,7 +666,7 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'create_task',
-    beschreibung: 'Legt eine neue Aufgabe in einem Projekt an. Fälligkeitsdatum ist Pflicht. Die zuständige Person muss Mitglied des Projekts sein und wird per E-Mail informiert. Mit parent_task_id entsteht eine Unter-Aufgabe (nur eine Ebene tief). Im persönlichen Projekt «Eigene Tasks» ist jede Aufgabe der Person selbst zugewiesen — assignee_id wird dort ignoriert, Tags gibt es keine, und niemand wird benachrichtigt.',
+    beschreibung: 'Legt eine neue Aufgabe in einem Projekt an. Fälligkeitsdatum ist Pflicht. Die zuständige Person muss Mitglied des Projekts sein und wird per E-Mail informiert. Mit parent_task_id entsteht eine Unter-Aufgabe (nur eine Ebene tief). Im persönlichen Projekt «Eigene Tasks» ist jede Aufgabe der Person selbst zugewiesen — assignee_id wird dort ignoriert, Tags gibt es keine, und niemand wird benachrichtigt. Mit vertraulich: true sehen die Aufgabe nur die zuständige Person, wer sie erstellt hat, die Beobachter und Administratoren; Unter-Aufgaben übernehmen den Wert des Mutter-Tasks.',
     schema: {
       type: 'object',
       properties: {
@@ -661,6 +679,7 @@ export const TOOLS: ToolDef[] = [
         folder_id: { type: 'string', description: 'Ordner innerhalb des Projekts' },
         tag_ids: { type: 'array', items: { type: 'string' }, description: 'Tags der Aufgabe (IDs aus list_tags; müssen zur Firma des Projekts gehören)' },
         parent_task_id: { type: 'string', description: 'Macht die Aufgabe zur Unter-Aufgabe dieser Aufgabe' },
+        vertraulich: { type: 'boolean', description: 'Nur für Beteiligte sichtbar (zuständig, erstellt, Beobachter) und für Administratoren. Bei Unter-Aufgaben ohne Wirkung — sie folgen dem Mutter-Task.' },
       },
       required: ['project_id', 'titel', 'faellig_am'],
       additionalProperties: false,
@@ -669,6 +688,12 @@ export const TOOLS: ToolDef[] = [
     async handler({ supabase, identitaet }, args) {
       const projectId = uuid(args, 'project_id')
       await verlangeProjektZugriff(supabase, identitaet, projectId)
+      // Unter-Aufgabe: den Mutter-Task muss man sehen dürfen — auch
+      // wenn er vertraulich ist
+      if (typeof args.parent_task_id === 'string')
+        await ladeTaskMitZugriff(supabase, identitaet, uuid(args, 'parent_task_id'))
+      if (args.vertraulich !== undefined && typeof args.vertraulich !== 'boolean')
+        throw new ToolFehler('«vertraulich» muss true oder false sein.')
 
       const { task } = auspacken(await createTask(supabase, identitaet.profile.id, {
         project_id: projectId,
@@ -680,6 +705,7 @@ export const TOOLS: ToolDef[] = [
         folder_id: args.folder_id,
         tag_ids: 'tag_ids' in args ? tagIdsAusArgs(args) : undefined,
         parent_task_id: args.parent_task_id,
+        vertraulich: args.vertraulich,
       }))
       const [ausgabe] = await tasksAusgeben(supabase, [task as unknown as RohTask])
       return { angelegt: ausgabe }
@@ -688,7 +714,7 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'update_task',
-    beschreibung: 'Ändert eine bestehende Aufgabe. Nur die übergebenen Felder werden angefasst. Zuständigkeits-, Titel- und Fälligkeitsänderungen lösen automatisch die üblichen E-Mails aus. Mit project_id wird die Aufgabe in ein anderes Projekt umgehängt (Unter-Aufgaben ziehen mit). tag_ids ersetzt die Tag-Liste vollständig — zuerst get_task lesen, sonst gehen bestehende Tags verloren.',
+    beschreibung: 'Ändert eine bestehende Aufgabe. Nur die übergebenen Felder werden angefasst. Zuständigkeits-, Titel- und Fälligkeitsänderungen lösen automatisch die üblichen E-Mails aus. Mit project_id wird die Aufgabe in ein anderes Projekt umgehängt (Unter-Aufgaben ziehen mit). tag_ids ersetzt die Tag-Liste vollständig — zuerst get_task lesen, sonst gehen bestehende Tags verloren. vertraulich stellt die Aufgabe samt Unter-Aufgaben auf «nur für Beteiligte» (bei Unter-Aufgaben selbst ohne Wirkung). Wer eine vertrauliche Aufgabe abgibt und sie weder erstellt hat noch beobachtet, sieht sie danach nicht mehr.',
     schema: {
       type: 'object',
       properties: {
@@ -701,6 +727,7 @@ export const TOOLS: ToolDef[] = [
         folder_id: { type: ['string', 'null'], description: 'null = aus dem Ordner nehmen' },
         tag_ids: { type: 'array', items: { type: 'string' }, description: 'Ersetzt die Tags der Aufgabe (leere Liste = alle Tags entfernen)' },
         project_id: { type: 'string', description: 'Zielprojekt beim Umhängen' },
+        vertraulich: { type: 'boolean', description: 'true = nur für Beteiligte und Administratoren sichtbar' },
       },
       required: ['task_id'],
       additionalProperties: false,
@@ -718,6 +745,10 @@ export const TOOLS: ToolDef[] = [
       if ('wiederholung' in args) eingabe.wiederholung = args.wiederholung
       if ('folder_id' in args) eingabe.folder_id = args.folder_id
       if ('tag_ids' in args) eingabe.tag_ids = tagIdsAusArgs(args)
+      if ('vertraulich' in args) {
+        if (typeof args.vertraulich !== 'boolean') throw new ToolFehler('«vertraulich» muss true oder false sein.')
+        eingabe.vertraulich = args.vertraulich
+      }
       if (typeof args.project_id === 'string') {
         const ziel = uuid(args, 'project_id')
         await verlangeProjektZugriff(supabase, identitaet, ziel)

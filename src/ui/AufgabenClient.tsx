@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, ClipboardList, Users, UserCircle, ChevronRight, Archive, Search, CalendarClock, MessageSquare, FolderOpen, Folder, Tags, X, Mail } from 'lucide-react'
+import { Plus, ClipboardList, Users, UserCircle, ChevronRight, Archive, Search, CalendarClock, MessageSquare, FolderOpen, Folder, Tags, X, Mail, Lock } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -57,6 +57,9 @@ interface TaskRow {
   assignee_id: string | null
   parent_task_id: string | null
   folder_id: string | null
+  /* Nur für Beteiligte sichtbar (sql/modul/13). Optional: ohne die
+     Spalte im Select fehlt einfach die Kennzeichnung. */
+  vertraulich?: boolean
   assignee: { id: string; full_name: string } | null
   project: { id: string; name: string } | null
   /* Tags aus dem Embed task_tag_zuordnungen(tag:task_tags(...)) */
@@ -95,9 +98,9 @@ interface AufgabenClientProps {
 }
 
 const emptyProjektForm = { name: '', company_id: '', beschreibung: '', member_ids: [] as string[] }
-const emptyTaskForm = { project_id: '', titel: '', beschreibung: '', assignee_id: '', due_date: '', wiederholung: '', folder_id: '', tag_ids: [] as string[] }
+const emptyTaskForm = { project_id: '', titel: '', beschreibung: '', assignee_id: '', due_date: '', wiederholung: '', folder_id: '', tag_ids: [] as string[], vertraulich: false }
 
-const SUCHE_SELECT = 'id, titel, beschreibung, due_date, status, project_id, assignee_id, parent_task_id, folder_id, assignee:profiles!tasks_assignee_id_fkey(id, full_name), project:projects(id, name), tags:task_tag_zuordnungen(tag:task_tags(id, name, farbe))'
+const SUCHE_SELECT = 'id, titel, beschreibung, due_date, status, project_id, assignee_id, parent_task_id, folder_id, vertraulich, assignee:profiles!tasks_assignee_id_fkey(id, full_name), project:projects(id, name), tags:task_tag_zuordnungen(tag:task_tags(id, name, farbe))'
 
 type FaelligFilter = 'ueberfaellig' | 'heute' | 'woche' | 'alle'
 // Die Schlüssel sind Werte, die Beschriftungen daneben Text —
@@ -547,6 +550,8 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
         wiederholung: taskForm.wiederholung || null,
         folder_id: taskForm.folder_id || null,
         tag_ids: taskForm.tag_ids,
+        // Im eigenen Projekt sieht ohnehin niemand sonst etwas
+        vertraulich: !taskFormIstEigen && taskForm.vertraulich,
       }),
     })
     const result = await res.json()
@@ -570,6 +575,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       assignee_id: result.task.assignee_id,
       parent_task_id: null,
       folder_id: result.task.folder_id ?? null,
+      vertraulich: !!result.task.vertraulich,
       assignee: assignee ? { id: assignee.id, full_name: assignee.full_name } : null,
       project: projekt ? { id: projekt.id, name: projekt.name } : null,
       tags: taskForm.tag_ids
@@ -626,6 +632,11 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
           </div>
         </div>
         <div className="flex flex-wrap justify-end items-center gap-x-2 gap-y-1 shrink-0 max-w-[45%] sm:max-w-none">
+          {task.vertraulich && (
+            <Badge variant="warning" className="whitespace-nowrap">
+              <span title={txt('Nur für Beteiligte sichtbar')} className="inline-flex items-center"><Lock size={11} className="mr-1" />{txt('Vertraulich')}</span>
+            </Badge>
+          )}
           {zeigeStatus && task.status === 'geschlossen' && (
             <Badge variant="default"><Archive size={11} className="mr-1" />{txt('Archiviert')}</Badge>
           )}
@@ -1007,6 +1018,23 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               </div>
               <p className="text-xs text-gray-500">{txt('Mehrfachauswahl möglich.')}</p>
             </div>
+          )}
+          {/* Vertraulich — im eigenen Projekt sinnlos */}
+          {taskForm.project_id && !taskFormIstEigen && (
+            <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={taskForm.vertraulich}
+                onChange={e => setTaskForm(f => ({ ...f, vertraulich: e.target.checked }))}
+                className="mt-0.5 w-4 h-4 shrink-0 accent-[#1a5276]"
+              />
+              <span>
+                <span className="inline-flex items-center gap-1 font-medium"><Lock size={13} />{txt('Vertraulich')}</span>
+                <span className="block text-xs text-gray-500">
+                  {txt('Titel und Inhalt sehen nur die zuständige Person, wer die Aufgabe erstellt hat, wer bei Notizen informiert wird — und Administratoren. Andere Projektmitglieder sehen die Aufgabe nicht.')}
+                </span>
+              </span>
+            </label>
           )}
         </div>
       </Modal>
