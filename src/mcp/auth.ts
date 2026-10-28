@@ -161,6 +161,32 @@ export async function nutzungStempeln(supabase: Db, tokenId: string): Promise<vo
   if (error) console.error('MCP: last_used_at konnte nicht gesetzt werden:', error)
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const istUuid = (v: unknown) => typeof v === 'string' && UUID_RE.test(v)
+
+/**
+ * Was von den Werkzeug-Argumenten ins Protokoll darf: IDs, Zahlen und
+ * Ja/Nein — von allen übrigen Feldern nur der Name (`felder`).
+ *
+ * mcp_audit lesen alle Admins. Titel, Beschreibungen, Notizen und
+ * Suchbegriffe aus «Eigene Tasks» oder vertraulichen Aufgaben gehören
+ * dort nicht hin; nachvollziehbar bleibt trotzdem, wer welche Aufgabe in
+ * welchem Projekt angefasst und welche Felder dabei gesetzt hat.
+ */
+export function protokollArgumente(argumente: unknown): Record<string, unknown> | null {
+  if (!argumente || typeof argumente !== 'object' || Array.isArray(argumente)) return null
+  const aus: Record<string, unknown> = {}
+  const felder: string[] = []
+  for (const [k, v] of Object.entries(argumente)) {
+    const id = /(^id|_id)$/.test(k) && (v === null || istUuid(v))
+    const ids = /_ids$/.test(k) && Array.isArray(v) && v.every(istUuid)
+    if (id || ids || typeof v === 'boolean' || typeof v === 'number') aus[k] = v
+    else felder.push(k)
+  }
+  if (felder.length) aus.felder = felder
+  return aus
+}
+
 /** Aufruf protokollieren (Nachvollziehbarkeit externer Zugriffe) */
 export async function protokollieren(
   supabase: Db,
@@ -174,7 +200,7 @@ export async function protokollieren(
     token_id: identitaet.tokenId,
     profile_id: identitaet.profile.id,
     tool,
-    argumente: (argumente ?? null) as never,
+    argumente: protokollArgumente(argumente) as never,
     erfolg,
     fehler: fehler ?? null,
   })
