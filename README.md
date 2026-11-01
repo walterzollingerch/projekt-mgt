@@ -239,6 +239,12 @@ Der MCP-Server arbeitet mit dem Service-Role-Schlüssel, **für den die RLS nich
 
 Einzige erlaubte Abweichung zwischen den Apps: wie die Nicht-Admin-Rolle heisst (`mitarbeiter` im Portal, `user` in Terramay). Geprüft wird überall nur auf `admin`.
 
+## Eigene MCP-Werkzeuge der App
+
+Seit v1.18 kann eine App über denselben Zugang weitere Werkzeuge anbieten: `mcpPost(request, token, erweiterung)` (`src/mcp/erweiterung.ts`). Die Erweiterung läuft nach der Token-Prüfung einmal pro Anfrage und liefert ihre Werkzeuge, deren Ausführung, eine Ergänzung der Anleitung und ob die Projekt-Werkzeuge angeboten werden. Das Portal hängt so Verwaltung und HR an; Terramay übergibt keine und verhält sich wie bisher.
+
+Mit Erweiterung verlangt der Zugang «Projekt-Mgt verwenden» nicht mehr pauschal, das Recht schaltet dann nur die Projekt-Werkzeuge frei. Die Rechte der App-Werkzeuge prüft die App; das Modul protokolliert ihre Aufrufe in `mcp_audit` (ohne Inhalte) und zählt sie in die Ratengrenze ein.
+
 ## Änderung ausliefern
 
 1. Hier ändern, `npm run typecheck`

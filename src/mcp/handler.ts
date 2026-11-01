@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { serviceClient, tokenAufloesen, nutzungStempeln, ratelimitPruefen, MCP_RATELIMIT_TEXT } from './auth'
 import { anfrageVerarbeiten, rpcFehler, FEHLER, SERVER_NAME, SERVER_VERSION } from './protocol'
+import type { McpErweiterung } from './erweiterung'
 
 // Gemeinsamer HTTP-Teil des MCP-Servers für beide Einstiegspunkte:
 // /api/mcp/<token> (Token im Pfad — für Claude Desktop, claude.ai
@@ -48,7 +49,12 @@ export function mcpDelete() {
   return new NextResponse(null, { status: 204, headers: CORS })
 }
 
-export async function mcpPost(request: NextRequest, token: string | null): Promise<NextResponse> {
+/**
+ * `erweiterung`: Werkzeuge der Gastgeber-App (erweiterung.ts). Mit ihr
+ * verlangt der Zugang das Recht «Projekt-Mgt verwenden» nicht mehr
+ * pauschal — es schaltet dann nur noch die Projekt-Werkzeuge frei.
+ */
+export async function mcpPost(request: NextRequest, token: string | null, erweiterung?: McpErweiterung): Promise<NextResponse> {
   let koerper: unknown
   try {
     koerper = await request.json()
@@ -57,7 +63,7 @@ export async function mcpPost(request: NextRequest, token: string | null): Promi
   }
 
   const supabase = serviceClient()
-  const auth = await tokenAufloesen(supabase, token)
+  const auth = await tokenAufloesen(supabase, token, { ohneProjektRecht: !!erweiterung })
   if (!auth.ok) {
     return json(
       {
@@ -81,7 +87,16 @@ export async function mcpPost(request: NextRequest, token: string | null): Promi
   }
 
   const ctx = { supabase, identitaet: auth.identitaet }
-  const antwort = await anfrageVerarbeiten(ctx, koerper)
+  let zusatz = null
+  try {
+    zusatz = erweiterung ? await erweiterung(ctx) : null
+  } catch (e) {
+    // Ohne Zusatz weiterzumachen hiesse, still weniger anzubieten —
+    // lieber ein klarer Fehler, den das Modell weitergeben kann
+    console.error('MCP: Erweiterung der App fehlgeschlagen:', e)
+    return json(rpcFehler(null, FEHLER.intern, 'Der Zugang konnte nicht vorbereitet werden. Bitte später erneut versuchen.'), 500)
+  }
+  const antwort = await anfrageVerarbeiten(ctx, koerper, zusatz)
 
   // Awaited — auf Vercel wird die Function nach der Response
   // eingefroren, nicht awaitete Promises laufen sonst nie

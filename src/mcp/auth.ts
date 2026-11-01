@@ -58,8 +58,17 @@ export type AuthErgebnis =
  * Schlägt fehl bei unbekanntem, widerrufenem oder abgelaufenem
  * Token, bei gesperrtem Profil und wenn die Person das Projekt-Mgt
  * gar nicht benutzen darf.
+ *
+ * `ohneProjektRecht`: Die letzte Prüfung entfällt — für Zugänge mit
+ * App-Werkzeugen (erweiterung.ts), die auch ohne Projekt-Mgt etwas
+ * anbieten. Die Projekt-Werkzeuge blendet dann `projektWerkzeugeErlaubt`
+ * aus.
  */
-export async function tokenAufloesen(supabase: Db, token: string | null | undefined): Promise<AuthErgebnis> {
+export async function tokenAufloesen(
+  supabase: Db,
+  token: string | null | undefined,
+  optionen: { ohneProjektRecht?: boolean } = {}
+): Promise<AuthErgebnis> {
   if (!token || typeof token !== 'string' || token.length < 20 || token.length > 200)
     return { ok: false, grund: 'Kein gültiger Zugang. Bitte die persönliche MCP-Adresse aus dem Portal verwenden.' }
 
@@ -91,13 +100,18 @@ export async function tokenAufloesen(supabase: Db, token: string | null | undefi
 
   if (!profile) return { ok: false, grund: 'Das zugehörige Benutzerprofil existiert nicht mehr.' }
   if (profile.is_blocked) return { ok: false, grund: 'Das zugehörige Benutzerprofil ist gesperrt.' }
-  if (profile.role !== 'admin' && !profile.can_use_projects)
+  if (!optionen.ohneProjektRecht && !projektWerkzeugeErlaubt(profile))
     return { ok: false, grund: 'Diesem Profil fehlt das Recht «Projekt-Mgt verwenden».' }
 
   return {
     ok: true,
     identitaet: { tokenId: row.id, tokenName: row.name, profile },
   }
+}
+
+/** Darf diese Person die Projekt-Mgt-Werkzeuge überhaupt benutzen */
+export function projektWerkzeugeErlaubt(profile: McpIdentitaet['profile']): boolean {
+  return profile.role === 'admin' || profile.can_use_projects
 }
 
 // ── Ratelimit ───────────────────────────────────────────────

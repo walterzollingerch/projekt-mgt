@@ -1,5 +1,6 @@
-import { toolListe, toolAusfuehren, type Kontext } from './tools'
-import { protokollieren } from './auth'
+import { toolListe, toolAusfuehren, TOOL_MAP, type Kontext } from './tools'
+import { protokollieren, projektWerkzeugeErlaubt } from './auth'
+import type { McpWerkzeugErgebnis, McpZusatz } from './erweiterung'
 
 // ============================================================
 // Minimale, zustandslose Umsetzung des Model Context Protocol
@@ -59,7 +60,8 @@ function rpcErgebnis(id: string | number | null, result: unknown) {
  */
 export async function nachrichtVerarbeiten(
   ctx: Kontext,
-  msg: JsonRpcAnfrage
+  msg: JsonRpcAnfrage,
+  zusatz: McpZusatz | null = null
 ): Promise<object | null> {
   const id = msg?.id ?? null
   const methode = msg?.method
@@ -70,6 +72,10 @@ export async function nachrichtVerarbeiten(
   // Benachrichtigungen (kein id-Feld) werden quittiert, nicht beantwortet
   if (methode.startsWith('notifications/')) return null
 
+  // Ohne Zusatz wie bisher: Projekt-Werkzeuge immer (das Recht hat
+  // tokenAufloesen dann schon verlangt)
+  const mitProjekt = !zusatz || (zusatz.projektWerkzeuge && projektWerkzeugeErlaubt(ctx.identitaet.profile))
+
   switch (methode) {
     case 'initialize': {
       const gewuenscht = typeof msg.params?.protocolVersion === 'string' ? msg.params.protocolVersion : null
@@ -79,10 +85,10 @@ export async function nachrichtVerarbeiten(
         capabilities: { tools: { listChanged: false } },
         serverInfo: {
           name: SERVER_NAME,
-          title: 'Tom Talent Portal — Projekt-Mgt',
+          title: zusatz ? 'Tom Talent Portal' : 'Tom Talent Portal — Projekt-Mgt',
           version: SERVER_VERSION,
         },
-        instructions: ANLEITUNG,
+        instructions: [mitProjekt ? ANLEITUNG : null, zusatz?.anleitung ?? null].filter(Boolean).join('\n\n'),
       })
     }
 
@@ -90,7 +96,7 @@ export async function nachrichtVerarbeiten(
       return rpcErgebnis(id, {})
 
     case 'tools/list':
-      return rpcErgebnis(id, { tools: toolListe() })
+      return rpcErgebnis(id, { tools: [...(mitProjekt ? toolListe() : []), ...(zusatz?.werkzeuge ?? [])] })
 
     case 'tools/call': {
       const name = msg.params?.name
@@ -98,7 +104,16 @@ export async function nachrichtVerarbeiten(
         return rpcFehler(id, FEHLER.ungueltigeParameter, 'Feld «name» fehlt.')
       const args = (msg.params?.arguments ?? {}) as Record<string, unknown>
 
-      const ergebnis = await toolAusfuehren(ctx, name, args)
+      let ergebnis: McpWerkzeugErgebnis
+      if (TOOL_MAP.has(name) || !zusatz) {
+        ergebnis = mitProjekt
+          ? await toolAusfuehren(ctx, name, args)
+          : { erfolg: false, fehler: 'Dieser Zugang bietet das Projekt-Mgt nicht an.' }
+      } else if (zusatz.werkzeuge.some(w => w.name === name)) {
+        ergebnis = await zusatz.ausfuehren(name, args)
+      } else {
+        ergebnis = { erfolg: false, fehler: `Unbekanntes Werkzeug «${name}».` }
+      }
       await protokollieren(
         ctx.supabase,
         ctx.identitaet,
@@ -129,13 +144,17 @@ export async function nachrichtVerarbeiten(
 }
 
 /** Einzelnachricht oder Stapel verarbeiten */
-export async function anfrageVerarbeiten(ctx: Kontext, koerper: unknown): Promise<object | object[] | null> {
+export async function anfrageVerarbeiten(
+  ctx: Kontext,
+  koerper: unknown,
+  zusatz: McpZusatz | null = null
+): Promise<object | object[] | null> {
   if (Array.isArray(koerper)) {
-    const antworten = await Promise.all(koerper.map(m => nachrichtVerarbeiten(ctx, m as JsonRpcAnfrage)))
+    const antworten = await Promise.all(koerper.map(m => nachrichtVerarbeiten(ctx, m as JsonRpcAnfrage, zusatz)))
     const gefiltert = antworten.filter((a): a is object => a !== null)
     return gefiltert.length > 0 ? gefiltert : null
   }
   if (!koerper || typeof koerper !== 'object')
     return rpcFehler(null, FEHLER.ungueltigeAnfrage, 'Ungültige JSON-RPC-Nachricht.')
-  return nachrichtVerarbeiten(ctx, koerper as JsonRpcAnfrage)
+  return nachrichtVerarbeiten(ctx, koerper as JsonRpcAnfrage, zusatz)
 }
