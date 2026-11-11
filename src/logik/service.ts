@@ -227,11 +227,22 @@ export async function addProjectMember(supabase: Db, userId: string, projectId: 
   if (!profileId || typeof profileId !== 'string' || !UUID_RE.test(profileId))
     return fail(400, 'Ungültige Profil-ID.')
 
-  const { data: member, error } = await supabase
+  // Das Profil bewusst NICHT als Embed im selben Befehl: Die RLS auf
+  // `profiles` zeigt Kolleg:innen über «teilt ein Projekt mit mir»,
+  // und diese Prüfung sieht die eben eingefügte Mitgliedschaft noch
+  // nicht. Wer mit der Person kein anderes Projekt teilt, bekäme
+  // `profile: null` — in der Liste «Unbekannt» und keine Info-Mail.
+  // Das Verzeichnis kennt alle Kolleg:innen.
+  const { data: zeile, error } = await supabase
     .from('project_members')
     .insert({ project_id: projectId, profile_id: profileId, added_by: userId })
-    .select('*, profile:profiles!project_members_profile_id_fkey(id, full_name, email)')
+    .select('*')
     .single()
+
+  const { data: profile } = zeile
+    ? await supabase.from('mitarbeiter_verzeichnis').select('id, full_name, email').eq('id', profileId).maybeSingle()
+    : { data: null }
+  const member = zeile ? { ...zeile, profile } : null
 
   if (error || !member) {
     const msg = error?.code === '23505'

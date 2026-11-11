@@ -11,12 +11,15 @@ import Input from './komponenten/Input'
 import { createClient } from './supabaseBrowser'
 import { formatDate } from '../hilfen'
 import { TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
+import PersonenFilter, { filterePersonen, leererPersonenFilter } from './komponenten/PersonenFilter'
 import { machT, type Woerterbuch } from './texte'
 
 interface ProfileOption {
   id: string
   full_name: string
   email: string
+  /* Für die Firmen-Eingrenzung bei der Mitgliederwahl */
+  company_id?: string | null
 }
 
 interface ProjectRow {
@@ -135,6 +138,7 @@ function sucheEscapen(q: string): string {
 
 export default function AufgabenClient({ initialProjects, initialOffeneTasks, folders, tags, companies, profiles, isManager, userId, basisPfad = '/aufgaben', texte }: AufgabenClientProps) {
   const txt = machT(texte)
+  const [mitgliedFilter, setMitgliedFilter] = useState(leererPersonenFilter)
   const labels = faelligLabels(txt)
   const supabase = createClient()
   const [projects, setProjects] = useState(initialProjects)
@@ -1084,8 +1088,12 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
           <div className="flex flex-col gap-1">
             <label className="text-sm font-medium text-gray-700">{txt('Mitglieder')}</label>
             <p className="text-xs text-gray-500 mb-1">Nur Mitglieder können Tasks zugewiesen bekommen. Zur Auswahl stehen Personen mit dem Recht «Projekt-Mgt verwenden» sowie Admins. Du wirst automatisch Mitglied.</p>
+            <PersonenFilter personen={profiles} firmen={companies} wert={mitgliedFilter} onChange={setMitgliedFilter} txt={txt} />
             <div className="border border-gray-200 rounded-md max-h-48 overflow-y-auto divide-y divide-gray-100">
-              {profiles.map(p => (
+              {filterePersonen(profiles, mitgliedFilter).length === 0 && (
+                <p className="px-3 py-2 text-sm text-gray-400">{txt('Keine Person gefunden.')}</p>
+              )}
+              {filterePersonen(profiles, mitgliedFilter).map(p => (
                 <label key={p.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-gray-50">
                   <input
                     type="checkbox"

@@ -13,6 +13,7 @@ import { createClient } from './supabaseBrowser'
 import { formatDate } from '../hilfen'
 import TagModusSchalter from './komponenten/TagModusSchalter'
 import ScreeningDialog from './komponenten/ScreeningDialog'
+import PersonenFilter, { filterePersonen, leererPersonenFilter } from './komponenten/PersonenFilter'
 import { TAG_FARBEN, TAG_FARB_LABELS, TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagFarbe, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
 import { planLesen, type ImportPlan } from '../logik/csvImport'
 import { machT, type Woerterbuch } from './texte'
@@ -21,6 +22,9 @@ interface ProfileOption {
   id: string
   full_name: string
   email: string
+  /* Für die Firmen-Eingrenzung im Mitglieder-Dialog; optional, weil
+     die Embeds auf `profiles` sie nicht mitladen */
+  company_id?: string | null
 }
 
 interface MemberRow {
@@ -130,6 +134,9 @@ interface ProjektClientProps {
   /* Tags der Firma dieses Projekts (gelten firmenweit) */
   initialTags: TagRow[]
   profiles: ProfileOption[]
+  /* Firmen für die Eingrenzung im Mitglieder-Dialog. Fehlen sie,
+     gibt es dort nur die Suche. */
+  companies?: { id: string; name: string }[]
   /* Aktive Projekte, in denen ich Mitglied bin — Ziele beim Umhängen */
   moveProjekte: MoveProjekt[]
   isManager: boolean
@@ -221,7 +228,7 @@ function gespeicherteAnsicht(): Ansicht {
   }
 }
 
-export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, moveProjekte, isManager, userId, basisPfad = '/aufgaben', screening, sprache, texte }: ProjektClientProps) {
+export default function ProjektClient({ project: initialProject, initialTasks, initialFolders, initialTags, profiles, companies = [], moveProjekte, isManager, userId, basisPfad = '/aufgaben', screening, sprache, texte }: ProjektClientProps) {
   const txt = machT(texte)
   const supabase = createClient()
   const router = useRouter()
@@ -256,6 +263,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const [memberModalOpen, setMemberModalOpen] = useState(false)
   const [memberError, setMemberError] = useState('')
   const [memberBusyId, setMemberBusyId] = useState<string | null>(null)
+  const [memberFilter, setMemberFilter] = useState(leererPersonenFilter)
   const [projectModalOpen, setProjectModalOpen] = useState(false)
   const [projectForm, setProjectForm] = useState({ name: initialProject.name, beschreibung: initialProject.beschreibung ?? '' })
 
@@ -947,6 +955,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   }
 
   // --- Mitglieder verwalten ---
+  const kandidaten = profiles.filter(p => !members.some(m => m.profile_id === p.id))
+  const gefiltert = filterePersonen(kandidaten, memberFilter)
   const handleAddMember = async (profileId: string) => {
     setMemberError('')
     setMemberBusyId(profileId)
@@ -958,7 +968,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const result = await res.json()
     setMemberBusyId(null)
     if (res.ok) {
-      setMembers(prev => [...prev, result.member])
+      // Die Antwort kann das Profil schuldig bleiben (ältere Server-
+      // Fassung, RLS) — die Person steht aber in der Auswahlliste
+      const member = result.member
+      setMembers(prev => [...prev, { ...member, profile: member.profile ?? profiles.find(p => p.id === profileId) ?? null }])
     } else {
       setMemberError(result.error || txt('Mitglied konnte nicht zugefügt werden.'))
     }
@@ -2490,7 +2503,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       {/* Mitglieder verwalten (nur Verwalter) — explizite Buttons
           statt Checkbox-Toggle, damit kein Klick versehentlich
           jemanden aus dem Projekt entfernt */}
-      <Modal open={memberModalOpen} onClose={() => { setMemberError(''); setMemberModalOpen(false) }} title={txt('Projektmitglieder')} size="lg">
+      <Modal open={memberModalOpen} onClose={() => { setMemberError(''); setMemberFilter(leererPersonenFilter); setMemberModalOpen(false) }} title={txt('Projektmitglieder')} size="lg">
         <p className="text-xs text-gray-500 mb-3">
           Nur Mitglieder können Tasks zugewiesen bekommen. Zur Auswahl stehen
           Personen mit dem Recht «Projekt-Mgt verwenden» sowie Admins.
@@ -2521,8 +2534,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         </div>
 
         <h4 className="text-sm font-semibold text-gray-700 mb-2">{txt('Hinzufügen')}</h4>
+        {kandidaten.length > 0 && (
+          <PersonenFilter personen={kandidaten} firmen={companies} wert={memberFilter} onChange={setMemberFilter} txt={txt} />
+        )}
         <div className="border border-gray-200 rounded-md max-h-64 overflow-y-auto divide-y divide-gray-100">
-          {profiles.filter(p => !members.some(m => m.profile_id === p.id)).map(p => (
+          {gefiltert.map(p => (
             <div key={p.id} className="flex items-center gap-2 px-3 py-2 text-sm">
               <div className="min-w-0 flex-1">
                 <div className="text-gray-800 truncate">{p.full_name}</div>
@@ -2539,8 +2555,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               </Button>
             </div>
           ))}
-          {profiles.filter(p => !members.some(m => m.profile_id === p.id)).length === 0 && (
-            <p className="px-3 py-2 text-sm text-gray-400">{txt('Alle berechtigten Personen sind bereits Mitglied.')}</p>
+          {gefiltert.length === 0 && (
+            <p className="px-3 py-2 text-sm text-gray-400">
+              {kandidaten.length === 0 ? txt('Alle berechtigten Personen sind bereits Mitglied.') : txt('Keine Person gefunden.')}
+            </p>
           )}
         </div>
       </Modal>
