@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { serviceClient, tokenAufloesen, nutzungStempeln, ratelimitPruefen, MCP_RATELIMIT_TEXT } from './auth'
-import { anfrageVerarbeiten, rpcFehler, FEHLER, SERVER_NAME, SERVER_VERSION } from './protocol'
+import { anfrageVerarbeiten, rpcFehler, FEHLER, MCP_STAPEL_TEXT, SERVER_NAME, SERVER_VERSION } from './protocol'
 import type { McpErweiterung } from './erweiterung'
 
 // Gemeinsamer HTTP-Teil des MCP-Servers für beide Einstiegspunkte:
@@ -20,6 +20,19 @@ const CORS: Record<string, string> = {
 function json(body: unknown, status = 200) {
   return NextResponse.json(body, { status, headers: CORS })
 }
+
+/**
+ * Grenze für den Anfragekörper. Eine JSON-RPC-Nachricht dieses
+ * Servers ist einige Kilobyte gross; 1 MiB ist reichlich für die
+ * längste Aufgabenbeschreibung und hält trotzdem davon ab, den
+ * Server mit einem riesigen Rumpf zu beschäftigen, bevor überhaupt
+ * ein Token geprüft ist.
+ */
+export const MCP_MAX_KOERPER_BYTES = 1024 * 1024
+
+const MCP_KOERPER_TEXT =
+  `Die Anfrage ist zu gross (mehr als ${MCP_MAX_KOERPER_BYTES / 1024} KiB). ` +
+  'Bitte in kleinere Aufrufe aufteilen.'
 
 /** Token aus dem Authorization-Header lesen (Bearer oder blank) */
 export function tokenAusHeader(request: NextRequest): string | null {
@@ -55,12 +68,30 @@ export function mcpDelete() {
  * pauschal — es schaltet dann nur noch die Projekt-Werkzeuge frei.
  */
 export async function mcpPost(request: NextRequest, token: string | null, erweiterung?: McpErweiterung): Promise<NextResponse> {
+  // Zuerst die Form der Anfrage, erst danach die Datenbank: Grösse
+  // und Stapel kosten keinen Token-Lookup.
+  const angekuendigt = Number(request.headers.get('content-length'))
+  if (Number.isFinite(angekuendigt) && angekuendigt > MCP_MAX_KOERPER_BYTES)
+    return json(rpcFehler(null, FEHLER.ungueltigeAnfrage, MCP_KOERPER_TEXT), 413)
+
   let koerper: unknown
   try {
-    koerper = await request.json()
+    const text = await request.text()
+    if (Buffer.byteLength(text, 'utf8') > MCP_MAX_KOERPER_BYTES)
+      return json(rpcFehler(null, FEHLER.ungueltigeAnfrage, MCP_KOERPER_TEXT), 413)
+    koerper = JSON.parse(text)
   } catch {
     return json(rpcFehler(null, FEHLER.parse, 'Ungültiges JSON.'), 400)
   }
+
+  // Stapel (JSON-Array) lehnt der Server ab. Die Protokollfassung
+  // 2025-06-18 hat das Batching aus JSON-RPC entfernt, und kein
+  // gängiger Client benutzt es: die offizielle SDK sendet pro POST
+  // genau eine Nachricht, und ihr eigener Server-Teil nimmt Arrays
+  // gar nicht mehr an. Angenommen hiesse: beliebig viele
+  // Werkzeugaufrufe in einer Anfrage, gleichzeitig ausgeführt — die
+  // bequeme Form, jede Mengengrenze zu umgehen.
+  if (Array.isArray(koerper)) return json(rpcFehler(null, FEHLER.ungueltigeAnfrage, MCP_STAPEL_TEXT), 400)
 
   const supabase = serviceClient()
   const auth = await tokenAufloesen(supabase, token, { ohneProjektRecht: !!erweiterung })

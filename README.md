@@ -13,7 +13,7 @@ Wer den Code in `node_modules/@tomtalent/projekt-mgt` bearbeitet, verliert die �
 ## Aufbau
 
 ```
-sql/modul/    Migrationen des Moduls in Reihenfolge (01…14). In jeder App
+sql/modul/    Migrationen des Moduls in Reihenfolge (01…15). In jeder App
               identisch — hier stehen die Tabellen, Trigger und Policies,
               die dem Projekt-Mgt gehören.
 sql/host/     Was die Gastgeber-App bereitstellen muss. Pro App eine
@@ -67,7 +67,7 @@ projektMgtKonfigurieren({
 **4. Datenbank.** In dieser Reihenfolge:
 
 1. `sql/host/<app>_01_voraussetzungen.sql`
-2. `sql/modul/01` bis `14` der Reihe nach
+2. `sql/modul/01` bis `15` der Reihe nach
 3. `sql/host/<app>_02_profilzugriff.sql`
 
 Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` und `shares_project_with()` aus `modul/01` benutzt. Stünde er in derselben Datei wie Schritt 1, würde ein Ausführen am Stück mit «function does not exist» abbrechen — eine Datei, die man nur teilweise ausführen darf, ist eine Falle.
@@ -80,7 +80,7 @@ Seit v1.19 lässt sich die Mitgliederwahl durchsuchen und nach Firma eingrenzen.
 
 ```sql
 BEGIN;
--- host/<app>_01, dann modul/01..10, dann host/<app>_02 aneinandergehängt
+-- host/<app>_01, dann modul/01..15, dann host/<app>_02 aneinandergehängt
 ROLLBACK;
 ```
 
@@ -270,6 +270,37 @@ Einzige erlaubte Abweichung zwischen den Apps: wie die Nicht-Admin-Rolle heisst 
 Seit v1.18 kann eine App über denselben Zugang weitere Werkzeuge anbieten: `mcpPost(request, token, erweiterung)` (`src/mcp/erweiterung.ts`). Die Erweiterung läuft nach der Token-Prüfung einmal pro Anfrage und liefert ihre Werkzeuge, deren Ausführung, eine Ergänzung der Anleitung und ob die Projekt-Werkzeuge angeboten werden. Das Portal hängt so Verwaltung und HR an; Terramay übergibt keine und verhält sich wie bisher.
 
 Mit Erweiterung verlangt der Zugang «Projekt-Mgt verwenden» nicht mehr pauschal, das Recht schaltet dann nur die Projekt-Werkzeuge frei. Die Rechte der App-Werkzeuge prüft die App; das Modul protokolliert ihre Aufrufe in `mcp_audit` (ohne Inhalte) und zählt sie in die Ratengrenze ein.
+
+**Seit v1.21 bekommt `ausfuehren` einen dritten Parameter**: `aufruf: McpAufruf` mit der Kennung dieses einen Werkzeugaufrufs — der `id` der `mcp_audit`-Zeile, die das Modul **vor** dem Aufruf geschrieben hat. Wer sie nicht braucht, lässt sie weg; bestehende Erweiterungen bleiben gültig.
+
+```ts
+async ausfuehren(name, args, aufruf) { /* aufruf.id: UUID, eindeutig pro Werkzeugaufruf */ }
+```
+
+Der Grund: Die Erweiterung läuft einmal pro **Anfrage**, ihr Kontext taugt also nicht, um etwas pro **Aufruf** zu reservieren. Eine App mit eigener Mengengrenze — im Portal die HR-Bremse, 60 Abfragen in 10 Minuten — braucht genau diesen Schlüssel: Zeile unter `aufruf.id` anlegen (zählen und eintragen in einer Anweisung, wie `mcp_aufruf_reservieren`), Werkzeug laufen lassen, danach dieselbe Zeile nachführen oder wieder löschen. Ohne die Kennung bliebe nur «zählen, lesen, eintragen» — und das ist genau die Lücke, die `sql/modul/15` im Modul geschlossen hat.
+
+## Ein Aufruf, ein Kontingent
+
+Der MCP-Zugang begrenzt, was eine Person in zehn Minuten auslösen kann: **300 Werkzeugaufrufe** (`MCP_MAX_PRO_FENSTER` in `src/mcp/auth.ts`). Bis v1.20 war die Grenze nur eine Empfehlung. Geprüft wurde einmal pro HTTP-Anfrage, eingetragen erst nach dem Werkzeug — zwischen Zählen und Eintragen lag die ganze Arbeit, und alles, was in dieser Zeit hereinkam, sah denselben Stand. Mit einem JSON-RPC-Stapel liefen so 150 Aufrufe in **einer** Anfrage durch; der Zähler stand danach auf 443.
+
+Zwei Änderungen halten die Grenze jetzt:
+
+- **Stapel werden abgelehnt** (`-32600`, HTTP 400). Die Protokollfassung **2025-06-18 hat das Batching aus MCP entfernt** — der Rumpf eines POST muss genau eine JSON-RPC-Nachricht sein. Auch kein gängiger Client braucht es: die offizielle SDK schickt pro POST eine Nachricht (ihr `Transport.send` nimmt genau eine), und ihr Server-Teil nimmt Arrays gar nicht mehr an. Begrenzen statt ablehnen wäre die halbe Antwort gewesen: ein Stapel bleibt eine Anfrage, die beliebig viel gleichzeitig anstösst, und niemand braucht ihn.
+- **Das Kontingent wird pro Aufruf reserviert**, bevor das Werkzeug läuft: `mcp_aufruf_reservieren()` (`sql/modul/15`) zählt und schreibt die `mcp_audit`-Zeile unter einem Advisory-Lock pro Person. Das ist der eigentliche Fund — auch ohne Stapel war «zählen, arbeiten, eintragen» zwischen gleichzeitigen Anfragen durchlässig. Dazu ein Grössenlimit von 1 MiB für den Anfragekörper (HTTP 413).
+
+Drei Dinge, die man dabei sieht:
+
+- **Die Protokollzeile entsteht am Anfang des Aufrufs, nicht am Ende.** Sie trägt bis zum Ergebnis `erfolg = false` und «Aufruf nicht abgeschlossen»; danach führt `aufrufAbschliessen()` das Ergebnis nach. Eine Zeile, die so stehen bleibt, ist ein Aufruf, dessen Function-Instanz unterwegs aufgehört hat — genauer als bisher, wo ein Abbruch keine Spur hinterliess.
+- **Der Aufruf, der die Grenze erreicht, bekommt ein `isError`-Ergebnis** mit dem Grenz-Text, damit das Modell es der Person sagen kann. Die **nächste** Anfrage beantwortet der Server mit **429** — den Code erkennen Clients als «später nochmal».
+- **Fail-open bleibt Fail-open.** Fehlt die Funktion (Migration noch nicht eingespielt) oder antwortet die Datenbank nicht, läuft der Aufruf und die Zeile entsteht auf dem alten Weg. Ein MCP-Zugang, der wegen eines Datenbankfehlers stillsteht, wäre der schlimmere Ausfall.
+
+Die Grenze ist die Stelle, an der der Zugang dicht ist oder nicht, und hat darum ihr eigenes Werkzeug:
+
+```bash
+npm run kontingent-pruefen
+```
+
+Es braucht nur Docker, baut Postgres, PostgREST und den MCP-Server dieses Moduls auf und spielt den Angriff nach: den Stapel, den zu grossen Rumpf und 40 gleichzeitige Einzelanfragen fünf Aufrufe unter der Grenze — danach müssen genau fünf durchgekommen und der Zähler genau 300 sein. Dazu die Gegenproben: ein echter Client der offiziellen MCP-SDK (Handschlag, `tools/list`, `tools/call`), zehn Aufrufe nacheinander, die Grenze pro Person, die Kennung pro Aufruf für die App-Werkzeuge, der Fail-open-Weg — und zur Sicherheit, dass die Prüfung etwas prüft, dasselbe Szenario noch einmal mit dem alten Muster, das die Grenze reisst. Wer am Protokoll, am Kontingent oder an der Stapelbehandlung etwas ändert, lässt es laufen.
 
 ## Änderung ausliefern
 

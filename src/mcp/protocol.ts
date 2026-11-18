@@ -1,5 +1,10 @@
 import { toolListe, toolAusfuehren, TOOL_MAP, type Kontext } from './tools'
-import { protokollieren, projektWerkzeugeErlaubt } from './auth'
+import {
+  aufrufAbschliessen,
+  aufrufReservieren,
+  projektWerkzeugeErlaubt,
+  MCP_RATELIMIT_TEXT,
+} from './auth'
 import type { McpWerkzeugErgebnis, McpZusatz } from './erweiterung'
 
 // ============================================================
@@ -104,21 +109,30 @@ export async function nachrichtVerarbeiten(
         return rpcFehler(id, FEHLER.ungueltigeParameter, 'Feld «name» fehlt.')
       const args = (msg.params?.arguments ?? {}) as Record<string, unknown>
 
+      // Kontingent für genau diesen Aufruf verbrauchen, BEVOR das
+      // Werkzeug läuft — sonst sehen gleichzeitige Aufrufe alle
+      // denselben Zählerstand. Die Reservierung schreibt zugleich die
+      // Protokollzeile; ihre Kennung bekommen die App-Werkzeuge mit.
+      const aufruf = await aufrufReservieren(ctx.supabase, ctx.identitaet, name, args)
+      if (!aufruf.erlaubt)
+        // Als fachliches Ergebnis, nicht als Protokollfehler: so sagt
+        // das Modell der Person, warum es aufhört. Die nächste Anfrage
+        // beantwortet der Server mit 429 (handler.ts).
+        return rpcErgebnis(id, { content: [{ type: 'text', text: MCP_RATELIMIT_TEXT }], isError: true })
+
       let ergebnis: McpWerkzeugErgebnis
       if (TOOL_MAP.has(name) || !zusatz) {
         ergebnis = mitProjekt
           ? await toolAusfuehren(ctx, name, args)
           : { erfolg: false, fehler: 'Dieser Zugang bietet das Projekt-Mgt nicht an.' }
       } else if (zusatz.werkzeuge.some(w => w.name === name)) {
-        ergebnis = await zusatz.ausfuehren(name, args)
+        ergebnis = await zusatz.ausfuehren(name, args, { id: aufruf.id })
       } else {
         ergebnis = { erfolg: false, fehler: `Unbekanntes Werkzeug «${name}».` }
       }
-      await protokollieren(
+      await aufrufAbschliessen(
         ctx.supabase,
-        ctx.identitaet,
-        name,
-        args,
+        aufruf.id,
         ergebnis.erfolg,
         ergebnis.erfolg ? undefined : ergebnis.fehler
       )
@@ -143,17 +157,26 @@ export async function nachrichtVerarbeiten(
   }
 }
 
-/** Einzelnachricht oder Stapel verarbeiten */
+/**
+ * Text für einen abgelehnten Stapel. Nennt die Spezifikation, damit
+ * der Fehler für einen Client-Entwickler nicht nach Laune aussieht.
+ */
+export const MCP_STAPEL_TEXT =
+  'Stapel (JSON-Arrays) nimmt dieser Server nicht an. Der Rumpf eines POST muss genau eine ' +
+  'JSON-RPC-Nachricht sein — seit der Protokollfassung 2025-06-18 kennt MCP kein Batching mehr. ' +
+  'Bitte die Nachrichten einzeln senden.'
+
+/**
+ * Eine Nachricht verarbeiten. Ein Stapel wird abgelehnt — siehe
+ * `mcpPost`, das ihn schon vor der Token-Prüfung abfängt; diese
+ * Prüfung ist die zweite Verteidigungslinie für andere Aufrufer.
+ */
 export async function anfrageVerarbeiten(
   ctx: Kontext,
   koerper: unknown,
   zusatz: McpZusatz | null = null
 ): Promise<object | object[] | null> {
-  if (Array.isArray(koerper)) {
-    const antworten = await Promise.all(koerper.map(m => nachrichtVerarbeiten(ctx, m as JsonRpcAnfrage, zusatz)))
-    const gefiltert = antworten.filter((a): a is object => a !== null)
-    return gefiltert.length > 0 ? gefiltert : null
-  }
+  if (Array.isArray(koerper)) return rpcFehler(null, FEHLER.ungueltigeAnfrage, MCP_STAPEL_TEXT)
   if (!koerper || typeof koerper !== 'object')
     return rpcFehler(null, FEHLER.ungueltigeAnfrage, 'Ungültige JSON-RPC-Nachricht.')
   return nachrichtVerarbeiten(ctx, koerper as JsonRpcAnfrage, zusatz)

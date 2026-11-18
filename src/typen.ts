@@ -133,6 +133,21 @@ export interface ProjektMgtDatabase {
         Args: Record<string, never>
         Returns: string
       }
+      // Verbraucht das Aufrufkontingent eines MCP-Werkzeugaufrufs und
+      // schreibt dabei die mcp_audit-Zeile — zählen und eintragen in
+      // einer Anweisung, serialisiert pro Person (sql/modul/15).
+      mcp_aufruf_reservieren: {
+        Args: {
+          p_aufruf_id: string
+          p_token_id: string | null
+          p_profile_id: string
+          p_tool: string
+          p_argumente: Json | null
+          p_grenze: number
+          p_fenster_minuten: number
+        }
+        Returns: { erlaubt: boolean; anzahl: number }[]
+      }
     }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>

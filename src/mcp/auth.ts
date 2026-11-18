@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { createHash, randomBytes, timingSafeEqual } from 'crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto'
 import type { Db, ProjektMgtDatabase } from '../typen'
 
 // ============================================================
@@ -122,6 +122,13 @@ export function projektWerkzeugeErlaubt(profile: McpIdentitaet['profile']): bool
 // teure Teil (jeder erzeugt Datenbankabfragen, manche verschicken
 // Mails).
 //
+// Verbraucht wird das Kontingent in `aufrufReservieren()` weiter
+// unten — einmal pro Werkzeugaufruf, vor der Ausführung, serialisiert
+// in der Datenbank. `ratelimitPruefen()` ist nur die billige Vorprüfung
+// am Anfang der HTTP-Anfrage, die den richtigen Statuscode (429) geben
+// kann; sie allein wäre durchlässig, sobald mehrere Aufrufe
+// gleichzeitig laufen.
+//
 // Grosszügig bemessen: Ein Modell, das an einem Projekt arbeitet,
 // macht ohne Weiteres 50 Aufrufe in wenigen Minuten. Die Grenze soll
 // Dauerschleifen und massenhaftes Abgreifen bremsen, nicht normales
@@ -201,22 +208,108 @@ export function protokollArgumente(argumente: unknown): Record<string, unknown> 
   return aus
 }
 
-/** Aufruf protokollieren (Nachvollziehbarkeit externer Zugriffe) */
-export async function protokollieren(
+// ── Aufruf reservieren und abschliessen ─────────────────────
+//
+// Ein Werkzeugaufruf bekommt seine Protokollzeile, BEVOR er läuft:
+// `mcp_aufruf_reservieren()` (sql/modul/15) zählt und trägt in einer
+// Anweisung ein, serialisiert pro Person. Damit kann sich kein zweiter
+// Aufruf — in derselben Anfrage oder in einer gleichzeitigen — auf
+// denselben Zählerstand berufen.
+//
+// Nach dem Werkzeug führt `aufrufAbschliessen()` das Ergebnis nach.
+// Eine Zeile, die auf «Aufruf nicht abgeschlossen» stehen bleibt, ist
+// ein Aufruf, dessen Function-Instanz unterwegs aufgehört hat.
+
+/** Steht in `mcp_audit.fehler`, solange der Aufruf läuft */
+export const MCP_AUFRUF_OFFEN = 'Aufruf nicht abgeschlossen'
+
+export interface AufrufReservierung {
+  /** Kennung dieses einen Werkzeugaufrufs — gleich der `id` der
+   *  `mcp_audit`-Zeile. Wird den App-Werkzeugen mitgegeben
+   *  (erweiterung.ts), damit auch sie pro Aufruf reservieren können. */
+  id: string
+  erlaubt: boolean
+  /** Stand des Zählers nach dieser Reservierung (0 = unbekannt) */
+  anzahl: number
+}
+
+/** Plan B: Zeile ohne Reservierung eintragen (Fail-open, s.u.) */
+async function zeileEintragen(
   supabase: Db,
   identitaet: McpIdentitaet,
+  id: string,
   tool: string,
-  argumente: unknown,
-  erfolg: boolean,
-  fehler?: string
+  argumente: unknown
 ): Promise<void> {
   const { error } = await supabase.from('mcp_audit').insert({
+    id,
     token_id: identitaet.tokenId,
     profile_id: identitaet.profile.id,
     tool,
     argumente: protokollArgumente(argumente) as never,
-    erfolg,
-    fehler: fehler ?? null,
+    erfolg: false,
+    fehler: MCP_AUFRUF_OFFEN,
   })
   if (error) console.error('MCP: Audit-Eintrag fehlgeschlagen:', error)
+}
+
+/**
+ * Kontingent für genau diesen Werkzeugaufruf verbrauchen.
+ *
+ * Bewusst FAIL-OPEN wie `ratelimitPruefen()`: Fehlt die Funktion
+ * (Migration 15 noch nicht eingespielt) oder antwortet die Datenbank
+ * nicht, läuft der Aufruf — und die Zeile entsteht auf dem alten Weg,
+ * weiterhin vor der Ausführung. Ein MCP-Zugang, der wegen eines
+ * Datenbankfehlers komplett stillsteht, wäre der schlimmere Ausfall;
+ * die Grenze bleibt dann so durchlässig, wie sie vorher war.
+ */
+export async function aufrufReservieren(
+  supabase: Db,
+  identitaet: McpIdentitaet,
+  tool: string,
+  argumente: unknown
+): Promise<AufrufReservierung> {
+  const id = randomUUID()
+  const { data, error } = await supabase.rpc('mcp_aufruf_reservieren', {
+    p_aufruf_id: id,
+    p_token_id: identitaet.tokenId,
+    p_profile_id: identitaet.profile.id,
+    p_tool: tool,
+    p_argumente: protokollArgumente(argumente) as never,
+    p_grenze: MCP_MAX_PRO_FENSTER,
+    p_fenster_minuten: MCP_FENSTER_MINUTEN,
+  })
+
+  const zeile = Array.isArray(data) ? data[0] : data
+  if (!error && zeile && typeof zeile.erlaubt === 'boolean') {
+    if (!zeile.erlaubt)
+      console.warn(
+        `MCP: Kontingent ausgeschöpft — Token ${identitaet.tokenId} (${identitaet.tokenName}), ` +
+        `Profil ${identitaet.profile.id}, ${zeile.anzahl} Aufrufe im Fenster, Werkzeug ${tool}`
+      )
+    return { id, erlaubt: zeile.erlaubt, anzahl: zeile.anzahl ?? 0 }
+  }
+
+  console.error(
+    'MCP: Aufruf konnte nicht reserviert werden (wird durchgelassen):',
+    error ?? 'Reservierung ohne Ergebnis'
+  )
+  await zeileEintragen(supabase, identitaet, id, tool, argumente)
+  return { id, erlaubt: true, anzahl: 0 }
+}
+
+/** Ergebnis des Werkzeugs in der reservierten Zeile nachführen */
+export async function aufrufAbschliessen(
+  supabase: Db,
+  aufrufId: string,
+  erfolg: boolean,
+  fehler?: string
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('mcp_audit')
+    .update({ erfolg, fehler: fehler ?? null })
+    .eq('id', aufrufId)
+    .select('id')
+  if (error) console.error('MCP: Audit-Eintrag konnte nicht nachgeführt werden:', error)
+  else if (!data?.length) console.error(`MCP: Keine Protokollzeile zum Aufruf ${aufrufId} gefunden`)
 }
