@@ -79,6 +79,19 @@
 -- Führe dieses Script im Supabase SQL Editor aus
 -- (setzt sql/modul/01 bis 13 voraus). Mehrfaches Ausführen ist
 -- ungefährlich.
+--
+-- STAND DER AUSLIEFERUNG
+--
+--   TT Portal   am 18.11.2026 in der Produktion eingespielt.
+--   Terramay    BEWUSST AUSGENOMMEN, auf Entscheid des Betreibers
+--               (Walter Zollinger) vom 18.11.2026.
+--
+-- Das weicht von der Regel in der README ab («Kam eine Migration
+-- dazu: in BEIDEN Datenbanken einspielen») und ist kein Versäumnis.
+-- Wer diese Datei in Terramay nachziehen will, soll das vorher mit
+-- ihm klären. Bis dahin gilt dort weiter der alte Stand: `tasks`
+-- lässt sich per direktem PATCH an sich ziehen, wie im Kopf dieser
+-- Datei beschrieben.
 -- ============================================================
 
 
