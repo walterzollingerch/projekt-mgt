@@ -315,7 +315,7 @@ SELECT 'authenticated darf darf_task_beteiligte_aendern ausfuehren (muss true se
        has_function_privilege('authenticated', 'public.darf_task_beteiligte_aendern(uuid)', 'EXECUTE')::text, 'true'
 UNION ALL
 SELECT 'authenticated darf die Trigger-Funktionen NICHT ausfuehren (muss ff sein)',
-       has_function_privilege('authenticated', 'public.task_update_schutz()', 'EXECUTE')::text
+       left(has_function_privilege('authenticated', 'public.task_update_schutz()', 'EXECUTE')::text, 1)
          || left(has_function_privilege('authenticated', 'public.sync_task_beobachter_projekt()', 'EXECUTE')::text, 1), 'ff'
 UNION ALL
 SELECT 'Trigger tasks_schutz vorhanden (muss 1 sein)',
