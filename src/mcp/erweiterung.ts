@@ -16,6 +16,14 @@ import type { Kontext } from './tools'
 // Die Rechte der App-Werkzeuge prüft die App selbst. Das Modul
 // protokolliert ihre Aufrufe nur wie die eigenen (mcp_audit, ohne
 // Inhalte) und zählt sie in die Ratengrenze ein.
+//
+// Die Erweiterung läuft einmal pro ANFRAGE — ihr Kontext taugt
+// deshalb nicht, um etwas pro Werkzeugaufruf zu reservieren. Dafür
+// bekommt `ausfuehren` seit v1.21 einen dritten Parameter: die
+// Kennung dieses einen Aufrufs (`McpAufruf`). Eine App, die eine
+// eigene Grenze atomar halten will (im Portal die HR-Bremse), hat
+// damit den Schlüssel, unter dem sie reservieren und danach
+// nachführen oder wieder löschen kann.
 // ============================================================
 
 export interface McpZusatzWerkzeug {
@@ -28,12 +36,31 @@ export interface McpZusatzWerkzeug {
 
 export type McpWerkzeugErgebnis = { erfolg: true; daten: unknown } | { erfolg: false; fehler: string }
 
+/** Ein einzelner Werkzeugaufruf — gültig genau für diesen Aufruf */
+export interface McpAufruf {
+  /**
+   * Kennung dieses Aufrufs, eine UUID. Sie ist die `id` der
+   * `mcp_audit`-Zeile, die das Modul VOR `ausfuehren` geschrieben hat
+   * (sql/modul/15) — eine App kann ihre eigenen Protokoll- und
+   * Reservierungszeilen daran hängen und so Modul- und App-Protokoll
+   * zusammenführen.
+   *
+   * Eindeutig pro Aufruf, auch wenn dasselbe Werkzeug in derselben
+   * Anfrage mehrmals vorkommt. Ein Fremdschlüssel auf `mcp_audit`
+   * ist trotzdem nicht ratsam: schlägt der Protokolleintrag des
+   * Moduls fehl, läuft der Aufruf bewusst weiter (Fail-open), und
+   * die Zeile fehlt dann.
+   */
+  id: string
+}
+
 export interface McpZusatz {
   /** Projekt-Mgt-Werkzeuge anbieten. Ohne das Recht «Projekt-Mgt
    *  verwenden» bleiben sie trotzdem aus. */
   projektWerkzeuge: boolean
   werkzeuge: McpZusatzWerkzeug[]
-  ausfuehren(name: string, args: Record<string, unknown>): Promise<McpWerkzeugErgebnis>
+  /** `aufruf` kam mit v1.21 dazu; wer ihn nicht braucht, lässt ihn weg. */
+  ausfuehren(name: string, args: Record<string, unknown>, aufruf: McpAufruf): Promise<McpWerkzeugErgebnis>
   /** Wird an die Anleitung aus `initialize` angehängt */
   anleitung?: string
 }
