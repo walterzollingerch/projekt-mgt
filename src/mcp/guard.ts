@@ -22,6 +22,10 @@ import type { McpIdentitaet } from './auth'
 // Stelle, an der auch ein Administrator nichts sieht. Der Guard
 // bildet das an drei Stellen ab: beim Sehen, beim Verwalten und bei
 // den Listen, die Admins sonst ungefiltert bekommen.
+//
+// Dazu kommen die Regeln der vertraulichen Aufgaben (sql/modul/13,
+// `vertraulichFilter` / `ladeTaskMitZugriff`) und der Schutz gegen
+// stilles Aneignen (sql/modul/14, `darfTaskAbschirmen`).
 // ============================================================
 
 export class ZugriffFehlt extends Error {}
@@ -158,7 +162,7 @@ export function verlangeProjektverwalter(id: McpIdentitaet): void {
 // Beteiligten des Mutter-Tasks — und Administratoren.
 
 /** Ist diese Person an der Aufgabe (oder ihrem Mutter-Task) beteiligt */
-async function istTaskBeteiligt(
+export async function istTaskBeteiligt(
   supabase: Db,
   id: McpIdentitaet,
   task: { id: string; assignee_id: string | null; created_by: string | null; parent_task_id: string | null }
@@ -207,6 +211,52 @@ export async function vertraulichFilter(supabase: Db, id: McpIdentitaet): Promis
   const teile = ['vertraulich.eq.false', `assignee_id.eq.${ich}`, `created_by.eq.${ich}`]
   if (ids.length > 0) teile.push(`id.in.(${ids.join(',')})`, `parent_task_id.in.(${ids.join(',')})`)
   return teile.join(',')
+}
+
+// ---- Abschirmen (sql/modul/14) -----------------------------
+//
+//   darf_task_abschirmen(t, p) → darfTaskAbschirmen
+//
+// «Abschirmen» heisst: die Aufgabe dem übrigen Projekt entziehen —
+// auf `vertraulich` stellen oder nach «Eigene Tasks» übernehmen.
+// Beides darf nur, wer an ihr schon beteiligt ist oder das Projekt
+// verwaltet. Ohne diese Prüfung könnte ein Mitglied über MCP eine
+// fremde Aufgabe an sich ziehen und für alle anderen unsichtbar
+// machen; die RLS greift hier nicht, der Zugang läuft mit Service
+// Role.
+//
+// Die Beteiligung wird am GESPEICHERTEN Stand der Aufgabe gemessen,
+// nicht an den Werten des Aufrufs — sonst genügte ein `assignee_id`
+// auf sich selbst im selben Aufruf.
+
+type TaskKern = { id: string; project_id: string; assignee_id: string | null; created_by: string | null; parent_task_id: string | null }
+
+export async function darfTaskAbschirmen(supabase: Db, id: McpIdentitaet, task: TaskKern): Promise<boolean> {
+  if (await istTaskBeteiligt(supabase, id, task)) return true
+  return await kannProjektVerwalten(supabase, id, task.project_id)
+}
+
+/** Vertraulichkeit einschalten (sql/modul/14) */
+export async function verlangeTaskAbschirmung(supabase: Db, id: McpIdentitaet, task: TaskKern): Promise<void> {
+  if (!(await darfTaskAbschirmen(supabase, id, task)))
+    throw new ZugriffFehlt(
+      'Nur Beteiligte oder die Projektverwaltung können eine Aufgabe auf «vertraulich» stellen: ' +
+      'die zuständige Person, wer sie erstellt hat oder wer bei Notizen informiert wird.'
+    )
+}
+
+/** Nach «Eigene Tasks» übernehmen (sql/modul/14) */
+export async function verlangeTaskUebernahme(supabase: Db, id: McpIdentitaet, task: TaskKern): Promise<void> {
+  if (!(await darfTaskAbschirmen(supabase, id, task)))
+    throw new ZugriffFehlt(
+      'Nur Beteiligte oder die Projektverwaltung können eine Aufgabe nach «Eigene Tasks» übernehmen — ' +
+      'dort sieht sie sonst niemand mehr.'
+    )
+}
+
+/** Gehört dieses Projekt einer Person persönlich («Eigene Tasks») */
+export async function istPersoenlichesProjekt(supabase: Db, projectId: string): Promise<boolean> {
+  return !!(await persoenlichFuer(supabase, projectId))
 }
 
 /** Task laden und Zugriff prüfen; liefert Task samt Projekt-ID */
