@@ -920,11 +920,12 @@ export async function updateTask(
         .single()
 
   if (error || !task) {
-    // Trigger-Meldungen (Mitgliedschaft, Hierarchie) sind bereits
-    // deutsch formuliert — direkt durchreichen
+    // Trigger-Meldungen (Mitgliedschaft, Hierarchie, Schutz der
+    // Urheberschaft und des Abschirmens) sind bereits deutsch
+    // formuliert — direkt durchreichen
     const msg = error?.message.includes('Mitglied zugefügt') || error?.message.includes('Mitglied werden')
       ? 'Der Zuständige muss zuerst dem Projekt als Mitglied zugefügt werden.'
-      : error && /Unter-Task|Mutter-Task|Ordner/.test(error.message)
+      : error && /Unter-Task|Mutter-Task|Ordner|Beteiligte|erstellt hat/.test(error.message)
         ? error.message.replace(/^.*?:\s*/, '')
         : 'Task konnte nicht gespeichert werden.'
     return fail(400, msg)

@@ -13,7 +13,7 @@ Wer den Code in `node_modules/@tomtalent/projekt-mgt` bearbeitet, verliert die �
 ## Aufbau
 
 ```
-sql/modul/    Migrationen des Moduls in Reihenfolge (01…13). In jeder App
+sql/modul/    Migrationen des Moduls in Reihenfolge (01…14). In jeder App
               identisch — hier stehen die Tabellen, Trigger und Policies,
               die dem Projekt-Mgt gehören.
 sql/host/     Was die Gastgeber-App bereitstellen muss. Pro App eine
@@ -67,7 +67,7 @@ projektMgtKonfigurieren({
 **4. Datenbank.** In dieser Reihenfolge:
 
 1. `sql/host/<app>_01_voraussetzungen.sql`
-2. `sql/modul/01` bis `13` der Reihe nach
+2. `sql/modul/01` bis `14` der Reihe nach
 3. `sql/host/<app>_02_profilzugriff.sql`
 
 Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` und `shares_project_with()` aus `modul/01` benutzt. Stünde er in derselben Datei wie Schritt 1, würde ein Ausführen am Stück mit «function does not exist» abbrechen — eine Datei, die man nur teilweise ausführen darf, ist eine Falle.
@@ -153,6 +153,30 @@ Regeln, alle in `sql/modul/13` erzwungen:
 
 Technisch prüfen `tasks_select_member` und `tasks_update_member` die Beteiligung, dazu `is_member_of_task()`. Auf dieser Funktion bauen die Policies von Notizen, Beobachtern, Tag-Zuordnungen und Anhängen auf, die damit ohne eigene Änderung folgen. Der MCP-Guard bildet das mit `vertraulichFilter()` und `ladeTaskMitZugriff()` nach. Eine App, die Aufgaben mit Service Role liest und weitergibt (Spiegelung nach Jira, Exporte), muss vertrauliche selbst auslassen.
 
+## Eine Aufgabe gehört dem Projekt
+
+Wer eine Aufgabe sehen darf, durfte sie bis v1.19 über die REST-Schnittstelle in jeder Spalte beschreiben — `tasks_update_member` prüfte im `WITH CHECK` nur die Mitgliedschaft. Damit liess sich eine fremde Aufgabe an sich ziehen und dem ganzen Team samt Projektverwaltung entziehen: `created_by` auf sich selbst, `vertraulich = true`, Beobachter weg. Die Oberfläche schickt `created_by` bei einer Änderung nie mit; die Datenbank nahm es trotzdem an.
+
+Drei Regeln in `sql/modul/14` halten das jetzt:
+
+- **Die Urheberschaft ist unveränderlich.** `created_by` lässt sich als angemeldete Person nicht ändern — ein `BEFORE UPDATE`-Trigger lehnt es mit deutscher Begründung ab.
+- **Abschirmen dürfen nur Beteiligte und die Projektverwaltung.** «Abschirmen» heisst: die Aufgabe dem übrigen Projekt entziehen, also auf «vertraulich» stellen oder nach «Eigene Tasks» übernehmen. Beteiligt ist, wer zuständig ist, sie erstellt hat oder bei Notizen informiert wird — gemessen am **gespeicherten** Stand, sonst genügte ein `assignee_id` auf sich selbst im selben Aufruf (`darf_task_abschirmen`).
+- **Beobachter entfernen** darf ebenfalls nur, wer beteiligt ist oder das Projekt verwaltet. Vorher konnte jedes Mitglied Kolleginnen still von den Mails jeder Aufgabe abschneiden.
+
+Was **bewusst bleibt**: Die Zuständigkeit darf weiterhin jedes Mitglied ändern — das ist Zusammenarbeit, nicht der Angriff, und still ist es nicht mehr, weil die Urheberschaft und die Beobachter stehen bleiben. Umhängen in ein anderes gewöhnliches Projekt bleibt erlaubt; dort ist die Aufgabe weiter sichtbar. «Eigene Tasks» ist der Sonderfall, weil dort niemand hineinsieht, auch kein Administrator.
+
+Eine Eigenheit, die beim Prüfen auffiel: «Vertraulich» einschalten kann auch die Projektverwaltung nur, wenn sie beteiligt ist. Postgres prüft die SELECT-Policy beim UPDATE auch gegen die **neue** Zeile — die Aufgabe wäre für sie im selben Moment unsichtbar, und die Datenbank lehnt die Änderung darum ab. Das ist die Zusage von `sql/modul/13` und bleibt so; unerreichbar wird dadurch nichts, weil nur Beteiligte abschirmen können und die Erstellerin beteiligt bleibt.
+
+Der MCP-Guard bildet dieselbe Regel mit `darfTaskAbschirmen()` nach — er ist dort die einzige Prüfung, denn der Zugang läuft mit Service Role.
+
+Die Regeln sind die Stelle, an der das Modul dicht ist oder nicht, und haben darum ihr eigenes Werkzeug:
+
+```bash
+npm run rechte-pruefen
+```
+
+Es braucht nur Docker, baut aus `werkzeug/pruefung/00_host_attrappe.sql` und allen Dateien aus `sql/modul/` eine leere Datenbank im Container auf und spielt darin den Angriff Schritt für Schritt nach — jeder mit seinem erwarteten Ergebnis, dazu die Gegenproben, dass Zuweisen, Umhängen, Vererbung von «vertraulich», «Eigene Tasks» und der Service-Role-Weg weiter gehen. Wer an einer Policy oder einem Trigger auf `tasks` etwas ändert, lässt es laufen.
+
 ## Schlussnotiz
 
 Die letzte Notiz einer Aufgabe erledigt sie meistens gleich mit. Im Notizfeld steht deshalb neben «Anfügen» ein zweiter Knopf **«Anfügen & schliessen»**: eine Aktion, ein Ergebnis — Notiz gespeichert, Aufgabe geschlossen und archiviert.
@@ -237,7 +261,7 @@ Es wirft erfundene Aufgaben-IDs, fremde Projekte, unbekannte Personen, kaputte D
 
 Die RLS-Policies in `sql/` sind in beiden Datenbanken identisch. Sie lesen `profiles.role = 'admin'`, `can_use_projects` und `can_manage_projects`.
 
-Der MCP-Server arbeitet mit dem Service-Role-Schlüssel, **für den die RLS nicht greift**. `src/mcp/guard.ts` bildet die Policies deshalb explizit im Code nach. **Wer eine Policy ändert, muss beide Seiten anfassen** — das SQL und den Guard.
+Der MCP-Server arbeitet mit dem Service-Role-Schlüssel, **für den die RLS nicht greift**. `src/mcp/guard.ts` bildet die Policies deshalb explizit im Code nach. **Wer eine Policy ändert, muss beide Seiten anfassen** — das SQL und den Guard. Für die Policies und Trigger auf `tasks` gibt es dafür `npm run rechte-pruefen` (siehe «Eine Aufgabe gehört dem Projekt»).
 
 Einzige erlaubte Abweichung zwischen den Apps: wie die Nicht-Admin-Rolle heisst (`mitarbeiter` im Portal, `user` in Terramay). Geprüft wird überall nur auf `admin`.
 

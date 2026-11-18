@@ -718,7 +718,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     if (data?.signedUrl) window.open(data.signedUrl, '_blank')
   }
 
-  // Beobachter entfernen (RLS: Projektmitglieder und Verwalter)
+  // Beobachter entfernen (RLS: Beteiligte und Projektverwaltung,
+  // sql/modul/14 — der Knopf erscheint nur dort)
   const handleRemoveWatcher = async (profileId: string) => {
     if (!detailTask) return
     const { error: delError } = await supabase
@@ -1173,6 +1174,19 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     ? memberOptions.find(m => m.id === detailTask.created_by) ?? null
     : null
 
+  // Beteiligt am geöffneten Task: zuständig, erstellt oder
+  // Beobachter. Nur Beteiligte und die Projektverwaltung dürfen die
+  // Aufgabe abschirmen — auf «vertraulich» stellen, nach «Eigene
+  // Tasks» übernehmen oder Beobachter entfernen (sql/modul/14).
+  // Dieselbe Regel steht in der Datenbank; hier bleiben nur die
+  // Knöpfe weg, die ohnehin abgewiesen würden.
+  const detailBeteiligt = !!detailTask && (
+    detailTask.assignee_id === userId ||
+    detailTask.created_by === userId ||
+    watchers.some(w => w.profile_id === userId)
+  )
+  const darfAbschirmen = darfVerwalten || detailBeteiligt
+
   // Unter-Tasks des geöffneten Tasks (für Anzeige und Abschluss-Sperre)
   const detailKinder = detailTask ? tasks.filter(t => t.parent_task_id === detailTask.id) : []
   const detailOffeneKinder = detailKinder.filter(t => t.status === 'offen').length
@@ -1186,6 +1200,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     ? moveProjekte.find(p => p.id === detailForm.project_id) ?? null
     : null
   const detailFirmenwechsel = !!detailZielProjekt && detailZielProjekt.company_id !== project.company_id
+
+  // Ziele beim Umhängen. «Eigene Tasks» steht nur Beteiligten und
+  // der Projektverwaltung offen — dort sieht die Aufgabe sonst
+  // niemand mehr, auch kein Administrator (sql/modul/14).
+  const detailMoveZiele = moveProjekte.filter(p =>
+    darfAbschirmen || !istPersoenlich(p) || p.id === detailTask?.project_id
+  )
 
   // Schalter «Vertraulich» für den Anlegen- und den Detail-Dialog
   const vertraulichSchalter = (an: boolean, setzen: (an: boolean) => void, mitUnterTasks = false) => (
@@ -1970,7 +1991,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 )}
                 {/* Umhängen — Unter-Tasks ziehen mit dem Mutter-Task mit
                     und lassen sich nicht einzeln verschieben */}
-                {!detailTask.parent_task_id && moveProjekte.length > 1 && (
+                {!detailTask.parent_task_id && detailMoveZiele.length > 1 && (
                   <div className="flex flex-col gap-1">
                     <label className="text-sm font-medium text-gray-700">{txt('Projekt')}</label>
                     <select
@@ -1978,7 +1999,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       onChange={e => setDetailForm(f => ({ ...f, project_id: e.target.value }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
                     >
-                      {moveProjekte.map(p => (
+                      {detailMoveZiele.map(p => (
                         <option key={p.id} value={p.id}>
                           {istPersoenlich(p)
                             ? txt('Eigene Tasks')
@@ -2000,6 +2021,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   </div>
                 )}
                 {!istEigenesProjekt && !detailTask.parent_task_id &&
+                  (darfAbschirmen || detailTask.vertraulich) &&
                   vertraulichSchalter(detailForm.vertraulich, an => setDetailForm(f => ({ ...f, vertraulich: an })), detailKinder.length > 0)}
               </>
             ) : (
@@ -2101,7 +2123,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     {watchers.filter(w => w.profile_id !== detailTask.assignee_id && w.profile_id !== detailTask.created_by).map(w => (
                       <span key={w.profile_id} className="inline-flex items-center gap-1 bg-[#eaf2f8] text-[#1a5276] rounded-full pl-2 pr-1 py-0.5">
                         {w.profile?.full_name ?? txt('Unbekannt')}
-                        {darfTasksBearbeiten && (
+                        {darfTasksBearbeiten && darfAbschirmen && (
                           <button
                             type="button"
                             title={txt('Nicht mehr informieren')}

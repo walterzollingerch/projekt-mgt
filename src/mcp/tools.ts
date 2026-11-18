@@ -22,6 +22,7 @@ import {
   ZugriffFehlt,
   fremdePersoenlicheProjektIds,
   istAdmin,
+  istPersoenlichesProjekt,
   istProjektverwalter,
   ladeOrdnerMitZugriff,
   ladeTagMitZugriff,
@@ -31,7 +32,9 @@ import {
   verlangeProjektVerwaltung,
   verlangeProjektZugriff,
   verlangeProjektverwalter,
+  verlangeTaskAbschirmung,
   verlangeTaskLoeschung,
+  verlangeTaskUebernahme,
   verlangeTagPflege,
   verlangeTagSicht,
   vertraulichFilter,
@@ -714,7 +717,7 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'update_task',
-    beschreibung: 'Ändert eine bestehende Aufgabe. Nur die übergebenen Felder werden angefasst. Zuständigkeits-, Titel- und Fälligkeitsänderungen lösen automatisch die üblichen E-Mails aus. Mit project_id wird die Aufgabe in ein anderes Projekt umgehängt (Unter-Aufgaben ziehen mit). tag_ids ersetzt die Tag-Liste vollständig — zuerst get_task lesen, sonst gehen bestehende Tags verloren. vertraulich stellt die Aufgabe samt Unter-Aufgaben auf «nur für Beteiligte» (bei Unter-Aufgaben selbst ohne Wirkung). Wer eine vertrauliche Aufgabe abgibt und sie weder erstellt hat noch beobachtet, sieht sie danach nicht mehr.',
+    beschreibung: 'Ändert eine bestehende Aufgabe. Nur die übergebenen Felder werden angefasst. Zuständigkeits-, Titel- und Fälligkeitsänderungen lösen automatisch die üblichen E-Mails aus. Mit project_id wird die Aufgabe in ein anderes Projekt umgehängt (Unter-Aufgaben ziehen mit). tag_ids ersetzt die Tag-Liste vollständig — zuerst get_task lesen, sonst gehen bestehende Tags verloren. vertraulich stellt die Aufgabe samt Unter-Aufgaben auf «nur für Beteiligte» (bei Unter-Aufgaben selbst ohne Wirkung). Wer eine vertrauliche Aufgabe abgibt und sie weder erstellt hat noch beobachtet, sieht sie danach nicht mehr. «Vertraulich» einschalten und das Übernehmen nach «Eigene Tasks» darf nur, wer an der Aufgabe beteiligt ist (zuständig, erstellt, Beobachter) oder das Projekt verwaltet.',
     schema: {
       type: 'object',
       properties: {
@@ -735,7 +738,7 @@ export const TOOLS: ToolDef[] = [
     nurLesen: false,
     async handler({ supabase, identitaet }, args) {
       const taskId = uuid(args, 'task_id')
-      await ladeTaskMitZugriff(supabase, identitaet, taskId)
+      const bisher = await ladeTaskMitZugriff(supabase, identitaet, taskId)
 
       const eingabe: Record<string, unknown> = {}
       if ('titel' in args) eingabe.titel = args.titel
@@ -747,11 +750,21 @@ export const TOOLS: ToolDef[] = [
       if ('tag_ids' in args) eingabe.tag_ids = tagIdsAusArgs(args)
       if ('vertraulich' in args) {
         if (typeof args.vertraulich !== 'boolean') throw new ToolFehler('«vertraulich» muss true oder false sein.')
+        // Einschalten blendet die Aufgabe für das übrige Projekt aus
+        // — nur für Beteiligte und die Projektverwaltung
+        // (sql/modul/14). Bei Unter-Aufgaben schreibt `updateTask`
+        // den Wert ohnehin nicht; sie folgen dem Mutter-Task.
+        if (args.vertraulich && !bisher.vertraulich && !bisher.parent_task_id)
+          await verlangeTaskAbschirmung(supabase, identitaet, bisher)
         eingabe.vertraulich = args.vertraulich
       }
       if (typeof args.project_id === 'string') {
         const ziel = uuid(args, 'project_id')
         await verlangeProjektZugriff(supabase, identitaet, ziel)
+        // Nach «Eigene Tasks» übernehmen entzieht die Aufgabe allen
+        // anderen, auch den Administratoren (sql/modul/14)
+        if (ziel !== bisher.project_id && (await istPersoenlichesProjekt(supabase, ziel)))
+          await verlangeTaskUebernahme(supabase, identitaet, bisher)
         eingabe.project_id = ziel
       }
       if (Object.keys(eingabe).length === 0) throw new ToolFehler('Keine Änderungen angegeben.')
