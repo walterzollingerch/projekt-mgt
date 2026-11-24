@@ -1,9 +1,13 @@
 import { Resend } from 'resend'
 import { escapeHtml, escapeHtmlMitLinks } from '../hilfen'
 import { hostLesen } from '../host'
+import { hatFaelligkeit, istUeberfaelligAm, OHNE_FAELLIGKEIT } from '../logik/faelligkeit'
 
-// Datum de-CH formatieren (due_date kommt als YYYY-MM-DD)
-function formatDatum(dateStr: string): string {
+// Datum de-CH formatieren (due_date kommt als YYYY-MM-DD). Ohne
+// Datum steht der Hinweis — seit sql/modul/16 ist die Fälligkeit
+// freiwillig.
+function formatDatum(dateStr: string | null | undefined): string {
+  if (!hatFaelligkeit(dateStr)) return OHNE_FAELLIGKEIT.toLowerCase()
   return new Date(`${dateStr.slice(0, 10)}T00:00:00`).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
@@ -137,7 +141,7 @@ interface TaskAssignedMailParams {
   empfaengerName: string
   taskTitel: string
   projektName: string
-  dueDate: string
+  dueDate: string | null
   zugewiesenVon: string
   taskPath: string
   antwortAn?: string | null
@@ -146,12 +150,13 @@ interface TaskAssignedMailParams {
 
 // Neuer Verantwortlicher: Task wurde dir zugewiesen
 export function sendTaskAssignedMail({ to, empfaengerName, taskTitel, projektName, dueDate, zugewiesenVon, taskPath, antwortAn, vertraulich }: TaskAssignedMailParams): Promise<boolean> {
-  const faellig = formatDatum(dueDate)
+  const frist = hatFaelligkeit(dueDate) ? `fällig ${formatDatum(dueDate)}` : formatDatum(dueDate)
+  const fristSatz = hatFaelligkeit(dueDate) ? `fällig am ${formatDatum(dueDate)}` : formatDatum(dueDate)
   return sendProjektMgtMail({
     to,
     empfaengerName,
-    subject: `Neue Aufgabe: ${taskTitel} (fällig ${faellig})`,
-    intro: `${zugewiesenVon} hat dir im Projekt «${projektName}» eine Aufgabe zugewiesen: «${taskTitel}» — fällig am ${faellig}.`,
+    subject: `Neue Aufgabe: ${taskTitel} (${frist})`,
+    intro: `${zugewiesenVon} hat dir im Projekt «${projektName}» eine Aufgabe zugewiesen: «${taskTitel}» — ${fristSatz}.`,
     buttonLabel: 'Aufgabe öffnen',
     buttonPath: taskPath,
     antwortAn,
@@ -249,7 +254,8 @@ export function sendMemberRemovedMail({ to, empfaengerName, projektName, geaende
 export interface TagesmailTask {
   id: string
   titel: string
-  due_date: string
+  /** null = ohne Fälligkeitsdatum (sql/modul/16) */
+  due_date: string | null
   project_id: string
   projektName: string
   firmaName: string | null
@@ -261,7 +267,8 @@ const TAGESMAIL_MAX_WEITERE = 100
 
 const WOCHENTAG_KURZ = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
 
-function datumMitTag(iso: string): string {
+function datumMitTag(iso: string | null): string {
+  if (!hatFaelligkeit(iso)) return OHNE_FAELLIGKEIT
   const [j, m, d] = iso.slice(0, 10).split('-')
   const tag = WOCHENTAG_KURZ[new Date(`${iso.slice(0, 10)}T12:00:00Z`).getUTCDay()]
   return `${tag} ${d}.${m}.${j}`
@@ -269,7 +276,7 @@ function datumMitTag(iso: string): string {
 
 function tagesmailTabelle(tasks: TagesmailTask[], stichtag: string, basis: string): string {
   const zeilen = tasks.map(t => {
-    const ueberfaellig = t.due_date < stichtag
+    const ueberfaellig = istUeberfaelligAm(t.due_date, stichtag)
     const heute = t.due_date === stichtag
     const datumFarbe = ueberfaellig ? '#b91c1c' : heute ? '#b45309' : '#374151'
     const vermerk = ueberfaellig ? ' · überfällig' : heute ? ' · heute' : ''
@@ -289,38 +296,44 @@ function tagesmailTabelle(tasks: TagesmailTask[], stichtag: string, basis: strin
 
 function tagesmailText(tasks: TagesmailTask[], stichtag: string): string {
   return tasks.map(t => {
-    const vermerk = t.due_date < stichtag ? ' (überfällig)' : t.due_date === stichtag ? ' (heute)' : ''
+    const vermerk = istUeberfaelligAm(t.due_date, stichtag) ? ' (überfällig)' : t.due_date === stichtag ? ' (heute)' : ''
     return `• ${datumMitTag(t.due_date)}${vermerk} — ${t.titel} [${t.projektName}]`
   }).join('\n')
 }
 
-// Abonnent:in: Übersicht der eigenen offenen Aufgaben, zuerst die bald fälligen
-export function sendTagesmail({ to, empfaengerName, stichtag, grenze, arbeitstage, baldFaellig, weitere }: {
+// Abonnent:in: Übersicht der eigenen offenen Aufgaben, zuerst die bald
+// fälligen. Aufgaben ohne Fälligkeitsdatum gelten als fällig und
+// stehen als eigene Gruppe direkt darunter — nicht unter «weitere»,
+// wo sie hinter allen Terminen verschwänden.
+export function sendTagesmail({ to, empfaengerName, stichtag, grenze, arbeitstage, baldFaellig, ohneDatum = [], weitere }: {
   to: string
   empfaengerName: string
   stichtag: string
   grenze: string
   arbeitstage: number
   baldFaellig: TagesmailTask[]
+  ohneDatum?: TagesmailTask[]
   weitere: TagesmailTask[]
 }): Promise<boolean> {
   const { appUrl, basisPfad } = hostLesen()
   const basis = `${appUrl}${basisPfad}`
-  const total = baldFaellig.length + weitere.length
-  const ueberfaellig = baldFaellig.filter(t => t.due_date < stichtag).length
+  const total = baldFaellig.length + ohneDatum.length + weitere.length
+  const ueberfaellig = baldFaellig.filter(t => istUeberfaelligAm(t.due_date, stichtag)).length
   const gezeigt = weitere.slice(0, TAGESMAIL_MAX_WEITERE)
   const rest = weitere.length - gezeigt.length
 
   const h2 = (text: string) =>
     `<h2 style="color:#1a5276;font-size:15px;margin:24px 0 6px;">${escapeHtml(text)}</h2>`
   const titelBald = `Überfällig und fällig in den nächsten ${arbeitstage} Arbeitstagen (bis ${datumMitTag(grenze)})`
-  const titelWeitere = baldFaellig.length > 0 ? 'Weitere offene Aufgaben' : 'Deine offenen Aufgaben'
+  const titelWeitere = baldFaellig.length + ohneDatum.length > 0 ? 'Weitere offene Aufgaben' : 'Deine offenen Aufgaben'
 
   const inhaltHtml = [
     h2(`${titelBald} — ${baldFaellig.length}`),
     baldFaellig.length > 0
       ? tagesmailTabelle(baldFaellig, stichtag, basis)
       : '<p style="color:#6b7280;font-size:14px;margin:0;">Nichts fällig in diesem Zeitraum.</p>',
+    ohneDatum.length > 0 ? h2(`${OHNE_FAELLIGKEIT} — ${ohneDatum.length}`) : '',
+    ohneDatum.length > 0 ? tagesmailTabelle(ohneDatum, stichtag, basis) : '',
     weitere.length > 0 ? h2(`${titelWeitere} — ${weitere.length}`) : '',
     weitere.length > 0 ? tagesmailTabelle(gezeigt, stichtag, basis) : '',
     rest > 0 ? `<p style="color:#6b7280;font-size:13px;margin:4px 0 0;">… und ${rest} weitere im Portal.</p>` : '',
@@ -329,6 +342,7 @@ export function sendTagesmail({ to, empfaengerName, stichtag, grenze, arbeitstag
   const inhaltText = [
     `${titelBald}:`,
     baldFaellig.length > 0 ? tagesmailText(baldFaellig, stichtag) : 'Nichts fällig in diesem Zeitraum.',
+    ...(ohneDatum.length > 0 ? ['', `${OHNE_FAELLIGKEIT}:`, tagesmailText(ohneDatum, stichtag)] : []),
     ...(weitere.length > 0 ? ['', `${titelWeitere}:`, tagesmailText(gezeigt, stichtag)] : []),
     ...(rest > 0 ? [`… und ${rest} weitere im Portal.`] : []),
   ].join('\n')
@@ -337,6 +351,7 @@ export function sendTagesmail({ to, empfaengerName, stichtag, grenze, arbeitstag
   const zusammenfassung = [
     ueberfaellig > 0 ? `${ueberfaellig} überfällig` : '',
     bald > 0 ? `${bald} bald fällig` : '',
+    ohneDatum.length > 0 ? `${ohneDatum.length} ohne Datum` : '',
     `${total} offen`,
   ].filter(Boolean).join(', ')
 

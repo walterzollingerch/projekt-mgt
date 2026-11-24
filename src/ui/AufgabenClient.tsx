@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, ClipboardList, Users, UserCircle, ChevronRight, Archive, Search, CalendarClock, MessageSquare, FolderOpen, Folder, Tags, X, Mail, Lock } from 'lucide-react'
+import { Plus, ClipboardList, Users, UserCircle, ChevronRight, Archive, Search, CalendarClock, CalendarOff, MessageSquare, FolderOpen, Folder, Tags, X, Mail, Lock } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -13,6 +13,7 @@ import { formatDate } from '../hilfen'
 import { TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
 import PersonenFilter, { filterePersonen, leererPersonenFilter } from './komponenten/PersonenFilter'
 import { machT, type Woerterbuch } from './texte'
+import { hatFaelligkeit, istFaelligBis, istUeberfaelligAm, vergleicheFaelligkeit } from '../logik/faelligkeit'
 
 interface ProfileOption {
   id: string
@@ -54,7 +55,8 @@ function istPersoenlich(p: { company_id: string | null; persoenlich_fuer?: strin
 interface TaskRow {
   id: string
   titel: string
-  due_date: string
+  /* null = ohne Fälligkeitsdatum; gilt als fällig (sql/modul/16) */
+  due_date: string | null
   status: 'offen' | 'geschlossen'
   project_id: string
   assignee_id: string | null
@@ -105,7 +107,9 @@ const emptyTaskForm = { project_id: '', titel: '', beschreibung: '', assignee_id
 
 const SUCHE_SELECT = 'id, titel, beschreibung, due_date, status, project_id, assignee_id, parent_task_id, folder_id, vertraulich, assignee:profiles!tasks_assignee_id_fkey(id, full_name), project:projects(id, name), tags:task_tag_zuordnungen(tag:task_tags(id, name, farbe))'
 
-type FaelligFilter = 'ueberfaellig' | 'heute' | 'woche' | 'alle'
+// Aufgaben ohne Fälligkeitsdatum gelten als fällig: sie stehen in
+// JEDEM dieser Filter, als eigene Gruppe zuoberst. «ohne» zeigt nur sie.
+type FaelligFilter = 'ueberfaellig' | 'heute' | 'woche' | 'alle' | 'ohne'
 // Die Schlüssel sind Werte, die Beschriftungen daneben Text —
 // übersetzt wird nur letzterer.
 const faelligLabels = (txt: (d: string) => string): Record<FaelligFilter, string> => ({
@@ -113,6 +117,7 @@ const faelligLabels = (txt: (d: string) => string): Record<FaelligFilter, string
   heute: txt('Bis heute'),
   woche: txt('Nächste 7 Tage'),
   alle: txt('Alle offenen'),
+  ohne: txt('Ohne Datum'),
 })
 
 function heuteISO(): string {
@@ -417,9 +422,19 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
   )
 
   const ueberfaelligAnzahl = useMemo(
-    () => offeneTasksAktiv.filter(t => t.due_date < heuteISO()).length,
+    () => offeneTasksAktiv.filter(t => istUeberfaelligAm(t.due_date, heuteISO())).length,
     [offeneTasksAktiv]
   )
+  const ohneDatumAnzahl = useMemo(
+    () => offeneTasksAktiv.filter(t => !hatFaelligkeit(t.due_date)).length,
+    [offeneTasksAktiv]
+  )
+
+  // Zusatz am Reiter «Fällig»: überfällige und solche ohne Datum getrennt
+  const faelligZusatz = [
+    ueberfaelligAnzahl > 0 ? txt('{0} überfällig', ueberfaelligAnzahl) : '',
+    ohneDatumAnzahl > 0 ? txt('{0} ohne Datum', ohneDatumAnzahl) : '',
+  ].filter(Boolean).join(', ')
 
   const faelligeTasks = useMemo(() => {
     const heute = heuteISO()
@@ -427,12 +442,15 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       .filter(t => {
         if (nurMeine && t.assignee_id !== userId) return false
         if (!passtZuTagFilter(t)) return false
-        if (faelligFilter === 'ueberfaellig') return t.due_date < heute
-        if (faelligFilter === 'heute') return t.due_date <= heute
-        if (faelligFilter === 'woche') return t.due_date <= inTagenISO(7)
+        // Ohne Datum = fällig: gehört in jeden Zeitraum
+        if (!hatFaelligkeit(t.due_date)) return true
+        if (faelligFilter === 'ohne') return false
+        if (faelligFilter === 'ueberfaellig') return istUeberfaelligAm(t.due_date, heute)
+        if (faelligFilter === 'heute') return istFaelligBis(t.due_date, heute)
+        if (faelligFilter === 'woche') return istFaelligBis(t.due_date, inTagenISO(7))
         return true
       })
-      .sort((a, b) => a.due_date.localeCompare(b.due_date))
+      .sort((a, b) => vergleicheFaelligkeit(a.due_date, b.due_date))
   }, [offeneTasksAktiv, faelligFilter, nurMeine, userId, passtZuTagFilter])
 
   // Die aktuelle Ansicht als Query. Sie hängt an jedem Task-Link, damit
@@ -490,7 +508,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       }
 
       if (!abgebrochen) {
-        setTreffer([...direkt, ...ausNotizen].sort((a, b) => b.due_date.localeCompare(a.due_date)))
+        setTreffer([...direkt, ...ausNotizen].sort((a, b) => vergleicheFaelligkeit(b.due_date, a.due_date)))
         setTrefferFuer(sucheBegriff)
       }
     }, 300)
@@ -537,8 +555,12 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
 
   const handleCreateTask = async () => {
     setTaskError('')
-    if (!taskForm.project_id || !taskForm.titel.trim() || !taskForm.due_date) {
-      setTaskError(txt('Projekt, Titel und Fertigstellungsdatum sind Pflichtfelder.'))
+    if (!taskForm.project_id || !taskForm.titel.trim()) {
+      setTaskError(txt('Projekt und Titel sind Pflichtfelder.'))
+      return
+    }
+    if (taskForm.wiederholung && !taskForm.due_date) {
+      setTaskError(txt('Eine wiederkehrende Aufgabe braucht ein Fertigstellungsdatum.'))
       return
     }
     setTaskLoading(true)
@@ -550,7 +572,8 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
         titel: taskForm.titel,
         beschreibung: taskForm.beschreibung,
         assignee_id: taskForm.assignee_id || null,
-        due_date: taskForm.due_date,
+        // Leer = ohne Fälligkeitsdatum
+        due_date: taskForm.due_date || null,
         wiederholung: taskForm.wiederholung || null,
         folder_id: taskForm.folder_id || null,
         tag_ids: taskForm.tag_ids,
@@ -595,7 +618,8 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
   }
 
   const renderTaskZeile = (task: TaskRow | SucheTreffer, zeigeStatus = false) => {
-    const ueberfaellig = task.status === 'offen' && task.due_date < heuteISO()
+    const ueberfaellig = task.status === 'offen' && istUeberfaelligAm(task.due_date, heuteISO())
+    const ohneDatum = !hatFaelligkeit(task.due_date)
     return (
       <Link
         key={task.id}
@@ -617,9 +641,15 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               <FolderOpen size={12} />
               {task.project?.name ?? txt('Unbekanntes Projekt')}
             </span>
-            <span className={ueberfaellig ? 'text-red-600 font-semibold' : ''}>
-              {txt('Fällig')}: {formatDate(task.due_date)}
-            </span>
+            {hatFaelligkeit(task.due_date) ? (
+              <span className={ueberfaellig ? 'text-red-600 font-semibold' : ''}>
+                {txt('Fällig')}: {formatDate(task.due_date)}
+              </span>
+            ) : (
+              <span className={`inline-flex items-center gap-1 ${task.status === 'offen' ? 'text-amber-700 font-medium' : ''}`}>
+                <CalendarOff size={12} />{txt('Ohne Fälligkeitsdatum')}
+              </span>
+            )}
             <span>{task.assignee ? task.assignee.full_name : txt('Nicht zugewiesen')}</span>
             {task.folder_id && (
               <span className="inline-flex items-center gap-1">
@@ -645,6 +675,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
             <Badge variant="default"><Archive size={11} className="mr-1" />{txt('Archiviert')}</Badge>
           )}
           {ueberfaellig && <Badge variant="danger">{txt('Überfällig')}</Badge>}
+          {ohneDatum && task.status === 'offen' && <Badge variant="warning" className="whitespace-nowrap">{txt('Fällig · ohne Datum')}</Badge>}
           <ChevronRight size={18} className="text-gray-400" />
         </div>
       </Link>
@@ -704,7 +735,7 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
       <div className="flex items-center gap-1 border-b border-gray-200 mb-4 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto">
         {([
           ['projekte', txt('Projekte ({0})', sichtbareProjekteAnzahl)],
-          ['faellig', `Fällig${ueberfaelligAnzahl > 0 ? ` (${ueberfaelligAnzahl} überfällig)` : ''}`],
+          ['faellig', `Fällig${faelligZusatz ? ` (${faelligZusatz})` : ''}`],
           ['suche', txt('Suche')],
         ] as const).map(([key, label]) => (
           <button
@@ -848,7 +879,27 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
                 {txt('Keine Aufgaben in diesem Zeitraum.')}
               </div>
             )}
-            {faelligeTasks.map(t => renderTaskZeile(t))}
+            {/* Zwei Gruppen: zuerst die ohne Fälligkeitsdatum (sie gelten
+                als fällig), dann die mit Termin. Die Überschriften
+                erscheinen nur, wenn es die erste Gruppe gibt. */}
+            {(() => {
+              const ohne = faelligeTasks.filter(t => !hatFaelligkeit(t.due_date))
+              const mit = faelligeTasks.filter(t => hatFaelligkeit(t.due_date))
+              if (ohne.length === 0) return mit.map(t => renderTaskZeile(t))
+              return (
+                <>
+                  <h3 className="flex items-center gap-1.5 text-sm font-semibold text-amber-800 mt-1">
+                    <CalendarOff size={14} />{txt('Ohne Fälligkeitsdatum')} ({ohne.length})
+                  </h3>
+                  <p className="text-xs text-gray-500 -mt-1">{txt('Diese Aufgaben haben keinen Termin und gelten deshalb als fällig.')}</p>
+                  {ohne.map(t => renderTaskZeile(t))}
+                  {mit.length > 0 && (
+                    <h3 className="text-sm font-semibold text-gray-700 mt-3">{txt('Mit Fälligkeitsdatum')} ({mit.length})</h3>
+                  )}
+                  {mit.map(t => renderTaskZeile(t))}
+                </>
+              )
+            })()}
           </div>
         </>
       )}
@@ -962,7 +1013,8 @@ export default function AufgabenClient({ initialProjects, initialOffeneTasks, fo
               </div>
             )}
             <Input
-              label={txt('Fertigstellungsdatum *')}
+              helpText={txt('Freiwillig. Ohne Datum gilt die Aufgabe als fällig.')}
+              label={txt('Fertigstellungsdatum')}
               className="text-base sm:text-sm"
               type="date"
               value={taskForm.due_date}

@@ -17,6 +17,8 @@ import {
   deleteTag,
   type Result,
 } from '../logik/service'
+import { TAG_FARBEN } from '../logik/tags'
+import { faelligBisFilter, hatFaelligkeit, istUeberfaelligAm } from '../logik/faelligkeit'
 import type { McpIdentitaet } from './auth'
 import {
   ZugriffFehlt,
@@ -107,7 +109,7 @@ interface RohTask {
   titel: string
   beschreibung?: string | null
   status: string
-  due_date: string
+  due_date: string | null
   wiederholung?: string | null
   parent_task_id?: string | null
   folder_id?: string | null
@@ -126,8 +128,11 @@ function taskAusgabe(t: RohTask, projekte: NamenKarte, personen: NamenKarte, ord
     titel: t.titel,
     beschreibung: t.beschreibung ?? null,
     status: t.status,
-    faellig_am: t.due_date,
-    ueberfaellig: t.status === 'offen' && t.due_date < heute(),
+    // null = ohne Fälligkeitsdatum; die Aufgabe gilt dann als fällig,
+    // aber nicht als überfällig (sql/modul/16)
+    faellig_am: t.due_date ?? null,
+    ohne_faelligkeit: !hatFaelligkeit(t.due_date),
+    ueberfaellig: t.status === 'offen' && istUeberfaelligAm(t.due_date, heute()),
     wiederholung: t.wiederholung ?? null,
     vertraulich: !!t.vertraulich,
     projekt: { id: t.project_id, name: projekte.get(t.project_id) ?? null },
@@ -322,7 +327,8 @@ export const TOOLS: ToolDef[] = [
             firma: p.company_id ? { id: p.company_id, name: firmenName.get(p.company_id) ?? null } : null,
             persoenlich: !!p.persoenlich_fuer,
             offene_aufgaben: eigene.length,
-            ueberfaellige_aufgaben: eigene.filter(t => t.due_date < stichtag).length,
+            ueberfaellige_aufgaben: eigene.filter(t => istUeberfaelligAm(t.due_date, stichtag)).length,
+            aufgaben_ohne_faelligkeit: eigene.filter(t => !hatFaelligkeit(t.due_date)).length,
           }
         }),
       }
@@ -352,7 +358,7 @@ export const TOOLS: ToolDef[] = [
           .from('project_members')
           .select('profile:profiles!project_members_profile_id_fkey(id, full_name, email)')
           .eq('project_id', projectId),
-        supabase.from('project_folders').select('id, name, position').eq('project_id', projectId).order('position'),
+        supabase.from('project_folders').select('id, name, farbe, position').eq('project_id', projectId).order('position'),
         tasksQ,
       ])
       if (!projekt) throw new ToolFehler('Projekt nicht gefunden.')
@@ -376,7 +382,8 @@ export const TOOLS: ToolDef[] = [
           .map(p => ({ id: p.id, name: p.full_name, email: p.email })),
         ordner: ordner ?? [],
         offene_aufgaben: offen.length,
-        ueberfaellige_aufgaben: offen.filter(t => t.due_date < stichtag).length,
+        ueberfaellige_aufgaben: offen.filter(t => istUeberfaelligAm(t.due_date, stichtag)).length,
+        aufgaben_ohne_faelligkeit: offen.filter(t => !hatFaelligkeit(t.due_date)).length,
         archivierte_aufgaben: (tasks ?? []).length - offen.length,
       }
     },
@@ -384,7 +391,7 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'list_tasks',
-    beschreibung: 'Listet Aufgaben — wahlweise eines Projekts oder über alle sichtbaren Projekte hinweg. Filter für Status, Zuständigkeit, Ordner, Tags und Fälligkeit. Standard: nur offene Aufgaben, älteste Fälligkeit zuerst.',
+    beschreibung: 'Listet Aufgaben — wahlweise eines Projekts oder über alle sichtbaren Projekte hinweg. Filter für Status, Zuständigkeit, Ordner, Tags und Fälligkeit. Standard: nur offene Aufgaben, zuerst die ohne Fälligkeitsdatum (sie gelten als fällig, Feld ohne_faelligkeit), dann älteste Fälligkeit zuerst.',
     schema: {
       type: 'object',
       properties: {
@@ -394,9 +401,10 @@ export const TOOLS: ToolDef[] = [
         assignee_id: { type: 'string', description: 'Nur Aufgaben dieser Person (Profil-ID)' },
         folder_id: { type: 'string', description: 'Nur Aufgaben in diesem Ordner' },
         tag_ids: { type: 'array', items: { type: 'string' }, description: 'Nur Aufgaben mit mindestens einem dieser Tags (IDs aus list_tags)' },
-        nur_ueberfaellig: { type: 'boolean', description: 'Nur Aufgaben, deren Fälligkeit in der Vergangenheit liegt' },
-        faellig_bis: { type: 'string', description: 'Nur Aufgaben mit Fälligkeit bis und mit diesem Datum (YYYY-MM-DD)' },
-        faellig_ab: { type: 'string', description: 'Nur Aufgaben mit Fälligkeit ab diesem Datum (YYYY-MM-DD)' },
+        nur_ueberfaellig: { type: 'boolean', description: 'Nur Aufgaben, deren Fälligkeit in der Vergangenheit liegt — dazu die ohne Fälligkeitsdatum, denn sie gelten als fällig (im Ergebnis an ohne_faelligkeit erkennbar)' },
+        faellig_bis: { type: 'string', description: 'Nur Aufgaben mit Fälligkeit bis und mit diesem Datum (YYYY-MM-DD) — dazu die ohne Fälligkeitsdatum' },
+        faellig_ab: { type: 'string', description: 'Nur Aufgaben mit Fälligkeit ab diesem Datum (YYYY-MM-DD); Aufgaben ohne Datum fallen hier weg' },
+        nur_ohne_faelligkeit: { type: 'boolean', description: 'Nur Aufgaben ohne Fälligkeitsdatum' },
         limit: { type: 'number', description: 'Maximale Anzahl (Standard 50, höchstens 200)' },
       },
       additionalProperties: false,
@@ -439,12 +447,18 @@ export const TOOLS: ToolDef[] = [
         q = q.in('id', taskIds)
       }
 
-      if (args.nur_ueberfaellig === true) q = q.lt('due_date', heute())
-      if (typeof args.faellig_bis === 'string') q = q.lte('due_date', args.faellig_bis)
+      // Ohne Datum = fällig: die Aufgabe gehört in jeden Filter, der
+      // nach Fälligem oder Überfälligem fragt (sql/modul/16)
+      if (args.nur_ueberfaellig === true) q = q.or(`due_date.is.null,due_date.lt.${heute()}`)
+      if (typeof args.faellig_bis === 'string') {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(args.faellig_bis)) throw new ToolFehler('faellig_bis muss ein Datum im Format YYYY-MM-DD sein.')
+        q = q.or(faelligBisFilter(args.faellig_bis))
+      }
       if (typeof args.faellig_ab === 'string') q = q.gte('due_date', args.faellig_ab)
+      if (args.nur_ohne_faelligkeit === true) q = q.is('due_date', null)
 
       const limit = Math.min(typeof args.limit === 'number' && args.limit > 0 ? args.limit : 50, 200)
-      const { data, error } = await q.order('due_date', { ascending: true }).limit(limit)
+      const { data, error } = await q.order('due_date', { ascending: true, nullsFirst: true }).limit(limit)
       if (error) throw new ToolFehler('Aufgaben konnten nicht geladen werden.')
 
       const aufgaben = await tasksAusgeben(supabase, (data ?? []) as RohTask[])
@@ -473,7 +487,7 @@ export const TOOLS: ToolDef[] = [
           .select('id, text, file_name, created_at, author:profiles!task_notes_author_id_fkey(id, full_name)')
           .eq('task_id', taskId)
           .order('created_at', { ascending: true }),
-        supabase.from('tasks').select(TASK_FELDER).eq('parent_task_id', taskId).order('due_date'),
+        supabase.from('tasks').select(TASK_FELDER).eq('parent_task_id', taskId).order('due_date', { nullsFirst: true }),
         supabase
           .from('task_watchers')
           .select('profile:profiles!task_watchers_profile_id_fkey(id, full_name)')
@@ -550,7 +564,7 @@ export const TOOLS: ToolDef[] = [
       if (args.nur_offene === true) direkt = direkt.eq('status', 'offen')
       if (getaggt !== null) direkt = direkt.in('id', getaggt)
 
-      const { data: treffer, error } = await direkt.order('due_date', { ascending: false }).limit(limit)
+      const { data: treffer, error } = await direkt.order('due_date', { ascending: false, nullsFirst: true }).limit(limit)
       if (error) throw new ToolFehler('Suche fehlgeschlagen.')
 
       const gefunden = new Map<string, RohTask>((treffer ?? []).map(t => [t.id, t as RohTask]))
@@ -669,13 +683,13 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'create_task',
-    beschreibung: 'Legt eine neue Aufgabe in einem Projekt an. Fälligkeitsdatum ist Pflicht. Die zuständige Person muss Mitglied des Projekts sein und wird per E-Mail informiert. Mit parent_task_id entsteht eine Unter-Aufgabe (nur eine Ebene tief). Im persönlichen Projekt «Eigene Tasks» ist jede Aufgabe der Person selbst zugewiesen — assignee_id wird dort ignoriert, Tags gibt es keine, und niemand wird benachrichtigt. Mit vertraulich: true sehen die Aufgabe nur die zuständige Person, wer sie erstellt hat, die Beobachter und Administratoren; Unter-Aufgaben übernehmen den Wert des Mutter-Tasks.',
+    beschreibung: 'Legt eine neue Aufgabe in einem Projekt an. Das Fälligkeitsdatum ist freiwillig: ohne faellig_am gilt die Aufgabe als fällig und erscheint in allen Listen fälliger Aufgaben mit dem Vermerk «ohne Fälligkeitsdatum». Eine wiederkehrende Aufgabe braucht ein Datum. Die zuständige Person muss Mitglied des Projekts sein und wird per E-Mail informiert. Mit parent_task_id entsteht eine Unter-Aufgabe (nur eine Ebene tief). Im persönlichen Projekt «Eigene Tasks» ist jede Aufgabe der Person selbst zugewiesen — assignee_id wird dort ignoriert, Tags gibt es keine, und niemand wird benachrichtigt. Mit vertraulich: true sehen die Aufgabe nur die zuständige Person, wer sie erstellt hat, die Beobachter und Administratoren; Unter-Aufgaben übernehmen den Wert des Mutter-Tasks.',
     schema: {
       type: 'object',
       properties: {
         project_id: { type: 'string' },
         titel: { type: 'string', description: 'Höchstens 300 Zeichen' },
-        faellig_am: { type: 'string', description: 'Fälligkeitsdatum im Format YYYY-MM-DD (Pflicht)' },
+        faellig_am: { type: 'string', description: 'Fälligkeitsdatum im Format YYYY-MM-DD. Weglassen = ohne Fälligkeitsdatum.' },
         beschreibung: { type: 'string' },
         assignee_id: { type: 'string', description: 'Profil-ID der zuständigen Person (muss Projektmitglied sein)' },
         wiederholung: { type: 'string', enum: ['woechentlich', 'monatlich', 'jaehrlich'], description: 'Beim Schliessen entsteht automatisch die nächste Aufgabe' },
@@ -684,7 +698,7 @@ export const TOOLS: ToolDef[] = [
         parent_task_id: { type: 'string', description: 'Macht die Aufgabe zur Unter-Aufgabe dieser Aufgabe' },
         vertraulich: { type: 'boolean', description: 'Nur für Beteiligte sichtbar (zuständig, erstellt, Beobachter) und für Administratoren. Bei Unter-Aufgaben ohne Wirkung — sie folgen dem Mutter-Task.' },
       },
-      required: ['project_id', 'titel', 'faellig_am'],
+      required: ['project_id', 'titel'],
       additionalProperties: false,
     },
     nurLesen: false,
@@ -724,7 +738,7 @@ export const TOOLS: ToolDef[] = [
         task_id: { type: 'string' },
         titel: { type: 'string' },
         beschreibung: { type: ['string', 'null'] },
-        faellig_am: { type: 'string', description: 'YYYY-MM-DD' },
+        faellig_am: { type: ['string', 'null'], description: 'YYYY-MM-DD; null = Fälligkeitsdatum entfernen (nicht bei wiederkehrenden Aufgaben)' },
         assignee_id: { type: ['string', 'null'], description: 'null = Zuständigkeit entfernen' },
         wiederholung: { type: ['string', 'null'], enum: ['woechentlich', 'monatlich', 'jaehrlich', null] },
         folder_id: { type: ['string', 'null'], description: 'null = aus dem Ordner nehmen' },
@@ -992,10 +1006,14 @@ export const TOOLS: ToolDef[] = [
 
   {
     name: 'create_folder',
-    beschreibung: 'Legt im Projekt einen Ordner an, um Aufgaben zu gruppieren. Der Name muss im Projekt eindeutig sein.',
+    beschreibung: 'Legt im Projekt einen Ordner an, um Aufgaben zu gruppieren. Der Name muss im Projekt eindeutig sein. Die Farbe ist freiwillig.',
     schema: {
       type: 'object',
-      properties: { project_id: { type: 'string' }, name: { type: 'string' } },
+      properties: {
+        project_id: { type: 'string' },
+        name: { type: 'string' },
+        farbe: { type: 'string', enum: [...TAG_FARBEN], description: 'Farbe des Ordners (weglassen = ohne Farbe)' },
+      },
       required: ['project_id', 'name'],
       additionalProperties: false,
     },
@@ -1003,19 +1021,20 @@ export const TOOLS: ToolDef[] = [
     async handler({ supabase, identitaet }, args) {
       const projectId = uuid(args, 'project_id')
       await verlangeProjektZugriff(supabase, identitaet, projectId)
-      const { folder } = auspacken(await createFolder(supabase, identitaet.profile.id, projectId, args.name))
+      const { folder } = auspacken(await createFolder(supabase, identitaet.profile.id, projectId, args.name, args.farbe))
       return { angelegt: folder }
     },
   },
 
   {
     name: 'update_folder',
-    beschreibung: 'Benennt einen Ordner um oder ändert seine Position in der Liste (0 = zuoberst).',
+    beschreibung: 'Benennt einen Ordner um, gibt ihm eine Farbe oder ändert seine Position in der Liste (0 = zuoberst).',
     schema: {
       type: 'object',
       properties: {
         folder_id: { type: 'string' },
         name: { type: 'string' },
+        farbe: { type: ['string', 'null'], enum: [...TAG_FARBEN, null], description: 'null = Farbe entfernen' },
         position: { type: 'number' },
       },
       required: ['folder_id'],
@@ -1027,6 +1046,7 @@ export const TOOLS: ToolDef[] = [
       await ladeOrdnerMitZugriff(supabase, identitaet, folderId)
       const eingabe: Record<string, unknown> = {}
       if ('name' in args) eingabe.name = args.name
+      if ('farbe' in args) eingabe.farbe = args.farbe
       if ('position' in args) eingabe.position = args.position
       const { folder } = auspacken(await updateFolder(supabase, folderId, eingabe))
       return { gespeichert: folder }

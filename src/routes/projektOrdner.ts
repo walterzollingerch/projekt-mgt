@@ -9,5 +9,5 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const a = await angemeldet()
   if (istAbbruch(a)) return a
   const body = await request.json()
-  return antwort(await createFolder(a.supabase, a.userId, projectId, body.name))
+  return antwort(await createFolder(a.supabase, a.userId, projectId, body.name, body.farbe))
 }

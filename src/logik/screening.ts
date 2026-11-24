@@ -55,7 +55,8 @@ export interface KontextTask {
   id: string
   titel: string
   beschreibung: string | null
-  faellig: string
+  /** null = ohne Fälligkeitsdatum */
+  faellig: string | null
   zustaendig: { id: string; name: string } | null
   ordner: string | null
   tags: string[]
@@ -105,7 +106,7 @@ export async function kontextLaden(supabase: Db, projektId: string): Promise<Scr
         )
         .eq('project_id', projektId)
         .eq('status', 'offen')
-        .order('due_date', { ascending: true })
+        .order('due_date', { ascending: true, nullsFirst: true })
         .limit(MAX_KONTEXT_TASKS + 1),
       supabase
         .from('project_members')
@@ -187,7 +188,8 @@ export interface AktionNeu extends AktionBasis {
   titel: string
   beschreibung: string | null
   zustaendigId: string | null
-  faellig: string
+  /** null = ohne Fälligkeitsdatum (sql/modul/16) */
+  faellig: string | null
   ordnerId: string | null
   tagIds: string[]
 }
@@ -301,7 +303,7 @@ export const SCREENING_SCHEMA = {
           faellig: {
             type: ['string', 'null'],
             description:
-              'Fälligkeitsdatum als YYYY-MM-DD. Pflicht bei neu; bei aktualisieren nur, wenn sich der Termin ändert. Nenne das Dokument kein Datum, wähle bei neu ein plausibles.',
+              'Fälligkeitsdatum als YYYY-MM-DD. Bei neu nur, wenn das Dokument einen Termin nennt oder klar nahelegt — sonst null, die Aufgabe entsteht dann ohne Fälligkeitsdatum. Erfinde kein Datum. Bei aktualisieren nur, wenn sich der Termin ändert.',
           },
           ordner_id: {
             type: ['string', 'null'],
@@ -419,7 +421,7 @@ export function kontextText(k: ScreeningKontext, heute = new Date().toISOString(
     zeilen.push('(keine)')
   } else {
     for (const t of k.tasks) {
-      const teile = [`- ${t.id}: «${t.titel}»`, `fällig ${t.faellig}`]
+      const teile = [`- ${t.id}: «${t.titel}»`, t.faellig ? `fällig ${t.faellig}` : 'ohne Fälligkeitsdatum']
       if (t.zustaendig) teile.push(`zuständig ${t.zustaendig.name}`)
       if (t.ordner) teile.push(`Ordner ${t.ordner}`)
       if (t.tags.length) teile.push(`Tags ${t.tags.join(', ')}`)
@@ -529,9 +531,8 @@ export function planPruefen(roh: RohPlan, kontext: ScreeningKontext): ScreeningP
       // — dann lieber ohne, als mit einer falschen Zuordnung.
       const imAktuellen = projektId === kontext.projektId
       const faellig = typeof r.faellig === 'string' && DATE_RE.test(r.faellig) ? r.faellig : null
-      if (!faellig) {
-        warnungen.push(`Die neue Aufgabe «${titel}» kam ohne brauchbares Datum — bitte Fälligkeit setzen.`)
-      }
+      // Kein Datum ist kein Mangel mehr (sql/modul/16): die Aufgabe
+      // entsteht ohne Fälligkeit, die Vorschau zeigt das an
       aktionen.push({
         nr,
         typ: 'neu',
@@ -544,7 +545,7 @@ export function planPruefen(roh: RohPlan, kontext: ScreeningKontext): ScreeningP
           typeof r.zustaendig_id === 'string' && bekanntePersonen.has(r.zustaendig_id) && imAktuellen
             ? r.zustaendig_id
             : null,
-        faellig: faellig ?? heute(),
+        faellig,
         ordnerId:
           typeof r.ordner_id === 'string' && bekannteOrdner.has(r.ordner_id) && imAktuellen ? r.ordner_id : null,
         tagIds: imAktuellen
@@ -607,10 +608,6 @@ export function planPruefen(roh: RohPlan, kontext: ScreeningKontext): ScreeningP
   }
 }
 
-function heute(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-
 // ------------------------------------------------------------
 // Formprüfung der bestätigten Aktionen
 // ------------------------------------------------------------
@@ -646,8 +643,7 @@ export function istGueltigeAktion(a: unknown): a is ScreeningAktion {
         typeof r.titel === 'string' &&
         !!r.titel.trim() &&
         r.titel.length <= MAX_TITEL &&
-        typeof r.faellig === 'string' &&
-        DATE_RE.test(r.faellig) &&
+        istDatumOderNull(r.faellig) &&
         istTextOderNull(r.beschreibung, MAX_BESCHREIBUNG) &&
         istIdOderNull(r.zustaendigId) &&
         istIdOderNull(r.ordnerId) &&

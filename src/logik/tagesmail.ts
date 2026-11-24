@@ -1,5 +1,6 @@
 import type { Db } from '../typen'
 import { sendTagesmail, type TagesmailTask } from '../mail/taskMail'
+import { hatFaelligkeit } from './faelligkeit'
 
 // ============================================================
 // Tägliche Aufgaben-Mail.
@@ -7,7 +8,9 @@ import { sendTagesmail, type TagesmailTask } from '../mail/taskMail'
 // Wer sie in der Übersicht abonniert hat (Tabelle
 // `aufgaben_tagesmail`, sql/modul/12), bekommt an jedem Arbeitstag
 // eine Mail mit ALLEN eigenen offenen Aufgaben — zuoberst die, die in
-// höchstens fünf Arbeitstagen fällig oder schon überfällig sind.
+// höchstens fünf Arbeitstagen fällig oder schon überfällig sind,
+// danach als eigene Gruppe die ohne Fälligkeitsdatum (sie gelten
+// als fällig, sql/modul/16).
 //
 // «Eigene» heisst: mir zugewiesen. Aufgaben ohne zuständige Person
 // oder aus archivierten Projekten erscheinen nicht — dieselbe Regel
@@ -122,10 +125,10 @@ async function ladeOffeneAufgaben(db: Db, profileId: string): Promise<TagesmailT
     .eq('assignee_id', profileId)
     .eq('status', 'offen')
     .eq('project.status', 'aktiv')
-    .order('due_date', { ascending: true })
+    .order('due_date', { ascending: true, nullsFirst: true })
     .limit(1000)
   if (error) throw error
-  return ((data ?? []) as unknown as { id: string; titel: string; due_date: string; project_id: string; parent_task_id: string | null; project: ProjektEmbed }[])
+  return ((data ?? []) as unknown as { id: string; titel: string; due_date: string | null; project_id: string; parent_task_id: string | null; project: ProjektEmbed }[])
     .map(t => ({
       id: t.id,
       titel: t.titel,
@@ -191,8 +194,9 @@ export async function tagesmailVersenden(db: Db, optionen: TagesmailOptionen = {
       stichtag,
       grenze,
       arbeitstage: TAGESMAIL_ARBEITSTAGE,
-      baldFaellig: aufgaben.filter(t => t.due_date <= grenze),
-      weitere: aufgaben.filter(t => t.due_date > grenze),
+      baldFaellig: aufgaben.filter(t => hatFaelligkeit(t.due_date) && t.due_date <= grenze),
+      ohneDatum: aufgaben.filter(t => !hatFaelligkeit(t.due_date)),
+      weitere: aufgaben.filter(t => hatFaelligkeit(t.due_date) && t.due_date > grenze),
     })
     if (!ok) {
       ergebnis.fehlgeschlagen++

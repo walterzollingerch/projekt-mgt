@@ -74,6 +74,8 @@ Drei Dateien statt einer, weil Schritt 3 die Funktionen `is_project_manager()` u
 
 Die Gastgeber-App muss mitbringen: `profiles` (mit `role`, `is_blocked`, `can_use_projects`, `can_manage_projects`), `companies` (`id`, `name`) und die View `mitarbeiter_verzeichnis` (`id, full_name, email, company_id, is_blocked, darf_projekte_nutzen`). Den Storage-Bucket `task-attachments` legt `sql/modul/02` an.
 
+Seit v1.22 (`sql/modul/16`) ist das Fälligkeitsdatum freiwillig und Ordner können eine Farbe tragen. Die Regel für «kein Datum» steht an einer Stelle, `src/logik/faelligkeit.ts`: Eine Aufgabe ohne Datum ist **fällig** — sie steht in der Fällig-Liste, in der Tagesmail (eigene Gruppe) und in den MCP-Filtern — aber nie überfällig. Wer in der App eigene Abfragen auf `tasks.due_date` hat, muss `null` einschliessen (`faelligBisFilter()`) und mit `nullsFirst` sortieren. Die Seiten laden bei den Ordnern zusätzlich `farbe` mit. In der Ordner-Liste lassen sich Aufgaben mit der Maus in einen anderen Ordner ziehen; in den Personen-Spalten ist die Sortierung wählbar (Datum oder Tags).
+
 Seit v1.19 lässt sich die Mitgliederwahl durchsuchen und nach Firma eingrenzen. Die Firmenauswahl erscheint, wenn die Seite den Personen `company_id` mitgibt und `ProjektClient` die Prop `companies` (`id`, `name`) bekommt; ohne beides bleibt nur die Suche.
 
 **Vor dem Einspielen trocken prüfen.** Die ganze Kette lässt sich gegen die Zieldatenbank durchspielen, ohne etwas zu hinterlassen — das findet alle fehlenden Voraussetzungen auf einmal statt eine pro Anlauf:

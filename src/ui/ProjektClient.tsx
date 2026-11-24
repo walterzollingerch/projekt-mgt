@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp, Sparkles, LayoutList, Columns3, CornerDownRight, Lock } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Users, Archive, RotateCcw, CheckCircle2, Trash2, Pencil, MessageSquare, UserPlus, UserMinus, Paperclip, Bell, X, Repeat, Folder, FolderTree, ChevronDown, ChevronRight, ArrowUp, ArrowDown, Tags, FileUp, Sparkles, LayoutList, Columns3, CornerDownRight, Lock, ArrowDownUp, CalendarOff } from 'lucide-react'
 import Button from './komponenten/Button'
 import Badge from './komponenten/Badge'
 import Modal from './komponenten/Modal'
@@ -14,7 +14,8 @@ import { formatDate } from '../hilfen'
 import TagModusSchalter from './komponenten/TagModusSchalter'
 import ScreeningDialog from './komponenten/ScreeningDialog'
 import PersonenFilter, { filterePersonen, leererPersonenFilter } from './komponenten/PersonenFilter'
-import { TAG_FARBEN, TAG_FARB_LABELS, TAG_CHIP_WAEHLBAR, passtZuTags, tagsVonTask, type TagFarbe, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
+import { TAG_FARBEN, TAG_FARB_LABELS, TAG_CHIP_WAEHLBAR, ordnerFarbKlassen, passtZuTags, tagsVonTask, type TagFarbe, type TagModus, type TagRow, type TaskTagRef } from '../logik/tags'
+import { hatFaelligkeit, vergleicheFaelligkeit } from '../logik/faelligkeit'
 import { planLesen, type ImportPlan } from '../logik/csvImport'
 import { machT, type Woerterbuch } from './texte'
 
@@ -65,6 +66,9 @@ interface FolderRow {
   id: string
   project_id: string
   name: string
+  /* Eine der Tag-Farben oder null (sql/modul/16). Optional: eine
+     Seite, die die Spalte nicht mitlädt, zeigt den Ordner farblos. */
+  farbe?: string | null
   position: number
 }
 
@@ -75,7 +79,9 @@ interface TaskRow {
   beschreibung: string | null
   assignee_id: string | null
   created_by: string | null
-  due_date: string
+  /* null = ohne Fälligkeitsdatum; die Aufgabe gilt dann als fällig
+     (sql/modul/16, ../logik/faelligkeit) */
+  due_date: string | null
   status: 'offen' | 'geschlossen'
   wiederholung: 'woechentlich' | 'monatlich' | 'jaehrlich' | null
   parent_task_id: string | null
@@ -166,18 +172,22 @@ function tagIdsVon(task: TaskRow): string[] {
   return (task.tags ?? []).map(z => z.tag?.id).filter((id): id is string => !!id)
 }
 
+// Reihenfolge nach Fälligkeit — ohne Datum zuoberst, denn diese
+// Aufgaben gelten als fällig
+const nachFaelligkeit = (a: TaskRow, b: TaskRow) => vergleicheFaelligkeit(a.due_date, b.due_date)
+
 // Offene Tasks hierarchisch ordnen: Mutter-Tasks nach Fälligkeit,
 // ihre offenen Unter-Tasks direkt eingerückt darunter
 function hierarchisch(offen: TaskRow[]): { task: TaskRow; istKind: boolean }[] {
   const wurzeln = offen
     .filter(t => !t.parent_task_id)
-    .sort((a, b) => a.due_date.localeCompare(b.due_date))
+    .sort(nachFaelligkeit)
   const result: { task: TaskRow; istKind: boolean }[] = []
   for (const wurzel of wurzeln) {
     result.push({ task: wurzel, istKind: false })
     offen
       .filter(t => t.parent_task_id === wurzel.id)
-      .sort((a, b) => a.due_date.localeCompare(b.due_date))
+      .sort(nachFaelligkeit)
       .forEach(kind => result.push({ task: kind, istKind: true }))
   }
   // Offene Unter-Tasks, deren Mutter bereits geschlossen/gelöscht
@@ -187,13 +197,17 @@ function hierarchisch(offen: TaskRow[]): { task: TaskRow; istKind: boolean }[] {
   return result
 }
 
-// Reihenfolge innerhalb einer Personen-Spalte: Wurzeln nach Fälligkeit,
-// darunter eingerückt die Unter-Tasks, die derselben Person gehören.
+// Reihenfolge innerhalb einer Personen-Spalte: Wurzeln in der
+// gewählten Sortierung (`vergleich`), darunter eingerückt die
+// Unter-Tasks, die derselben Person gehören.
 // Ein Unter-Task, dessen Mutter-Task in einer anderen Spalte steht,
 // zählt hier als Wurzel — die Karte nennt dann den Mutter-Task.
-function spaltenReihenfolge(liste: TaskRow[]): { task: TaskRow; unterMutter: boolean }[] {
+function spaltenReihenfolge(
+  liste: TaskRow[],
+  vergleich: (a: TaskRow, b: TaskRow) => number = nachFaelligkeit
+): { task: TaskRow; unterMutter: boolean }[] {
   const ids = new Set(liste.map(t => t.id))
-  const nachDatum = (a: TaskRow, b: TaskRow) => a.due_date.localeCompare(b.due_date)
+  const nachDatum = vergleich
   const result: { task: TaskRow; unterMutter: boolean }[] = []
   liste
     .filter(t => !t.parent_task_id || !ids.has(t.parent_task_id))
@@ -210,7 +224,14 @@ function istUeberfaellig(task: TaskRow): boolean {
   if (task.status !== 'offen') return false
   const heute = new Date()
   heute.setHours(0, 0, 0, 0)
+  // Ohne Datum fällig, aber nicht überfällig
+  if (!hatFaelligkeit(task.due_date)) return false
   return new Date(`${task.due_date}T00:00:00`) < heute
+}
+
+// Offen und ohne Datum: wird überall statt des Datums ausgewiesen
+function istOhneFaelligkeit(task: TaskRow): boolean {
+  return task.status === 'offen' && !hatFaelligkeit(task.due_date)
 }
 
 // Wie die offenen Aufgaben angeordnet sind: als Liste nach Ordnern
@@ -219,6 +240,19 @@ function istUeberfaellig(task: TaskRow): boolean {
 // liegt deshalb im Browser, nicht in der Datenbank.
 type Ansicht = 'ordner' | 'personen'
 const ANSICHT_SCHLUESSEL = 'projekt-mgt.ansicht'
+
+// Sortierung der Karten in den Personen-Spalten — wie die Ansicht
+// eine persönliche Gewohnheit, deshalb ebenfalls im Browser.
+type BoardSortierung = 'datum' | 'tags'
+const SORTIERUNG_SCHLUESSEL = 'projekt-mgt.board-sortierung'
+
+function gespeicherteSortierung(): BoardSortierung {
+  try {
+    return localStorage.getItem(SORTIERUNG_SCHLUESSEL) === 'tags' ? 'tags' : 'datum'
+  } catch {
+    return 'datum'
+  }
+}
 
 function gespeicherteAnsicht(): Ansicht {
   try {
@@ -243,6 +277,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   // Wahl kommt gleich danach aus dem localStorage.
   const [ansicht, setAnsicht] = useState<Ansicht>('ordner')
   useEffect(() => { setAnsicht(gespeicherteAnsicht()) }, [])
+  const [boardSortierung, setBoardSortierung] = useState<BoardSortierung>('datum')
+  useEffect(() => { setBoardSortierung(gespeicherteSortierung()) }, [])
+  const sortierungWaehlen = (s: BoardSortierung) => {
+    setBoardSortierung(s)
+    try { localStorage.setItem(SORTIERUNG_SCHLUESSEL, s) } catch { /* wie bei der Ansicht */ }
+  }
   const ansichtWaehlen = (a: Ansicht) => {
     setAnsicht(a)
     try { localStorage.setItem(ANSICHT_SCHLUESSEL, a) } catch { /* privater Modus o. ä. — dann gilt die Wahl nur bis zum Neuladen */ }
@@ -274,6 +314,14 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const [neuerFolderName, setNeuerFolderName] = useState('')
   const [editFolderId, setEditFolderId] = useState<string | null>(null)
   const [editFolderName, setEditFolderName] = useState('')
+  // '' = ohne Farbe
+  const [neuerFolderFarbe, setNeuerFolderFarbe] = useState<TagFarbe | ''>('')
+  const [editFolderFarbe, setEditFolderFarbe] = useState<TagFarbe | ''>('')
+  // Drag & Drop zwischen Ordnern: welche Aufgabe gerade gezogen wird
+  // und über welcher Gruppe sie schwebt ('ohne' = ohne Ordner)
+  const [ziehtTaskId, setZiehtTaskId] = useState<string | null>(null)
+  const [zielGruppe, setZielGruppe] = useState<string | null>(null)
+  const [ziehFehler, setZiehFehler] = useState('')
   // Eingeklappte Ordner-Sektionen ('ohne' = Aufgaben ohne Ordner)
   const [eingeklappt, setEingeklappt] = useState<Set<string>>(new Set())
 
@@ -327,7 +375,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       titel: task.titel,
       beschreibung: task.beschreibung ?? '',
       assignee_id: task.assignee_id ?? '',
-      due_date: task.due_date,
+      due_date: task.due_date ?? '',
       wiederholung: task.wiederholung ?? '',
       folder_id: task.folder_id ?? '',
       tag_ids: tagIdsVon(task),
@@ -417,9 +465,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const gruppen: { folder: FolderRow | null; eintraege: { task: TaskRow; istKind: boolean }[] }[] =
       folders.map(f => ({ folder: f, eintraege: hierarchisch(offen.filter(t => t.folder_id === f.id)) }))
     const ohne = hierarchisch(offen.filter(t => !t.folder_id || !bekannt.has(t.folder_id)))
-    if (ohne.length > 0 || folders.length === 0) gruppen.push({ folder: null, eintraege: ohne })
+    // Während eine Aufgabe gezogen wird, steht «Ohne Ordner» auch leer
+    // da — sonst gäbe es kein Ziel, um sie aus einem Ordner zu nehmen
+    if (ohne.length > 0 || folders.length === 0 || ziehtTaskId) gruppen.push({ folder: null, eintraege: ohne })
     return gruppen
-  }, [tasks, folders, nachTagFilter])
+  }, [tasks, folders, nachTagFilter, ziehtTaskId])
   const archivierteTasks = useMemo(() => {
     const geschlossen = nachTagFilter(tasks.filter(t => t.status === 'geschlossen'))
       .sort((a, b) => (b.closed_at ?? '').localeCompare(a.closed_at ?? ''))
@@ -443,7 +493,19 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   // Mutter-Task als Hinweis; die Ordner-Hierarchie gibt es hier nicht.
   const personenSpalten = useMemo(() => {
     const offen = nachTagFilter(tasks.filter(t => t.status === 'offen'))
-      .sort((a, b) => a.due_date.localeCompare(b.due_date))
+      .sort(nachFaelligkeit)
+    // Sortierung nach Tags: in der Reihenfolge der Tag-Pflege nach dem
+    // ersten Tag der Aufgabe, Aufgaben ohne Tag zuletzt; innerhalb
+    // desselben Tags nach Fälligkeit
+    const tagRang = (t: TaskRow) => {
+      const erster = tagsVonTask(t.tags, tags)[0]
+      if (!erster) return Number.MAX_SAFE_INTEGER
+      const i = tags.findIndex(g => g.id === erster.id)
+      return i === -1 ? Number.MAX_SAFE_INTEGER - 1 : i
+    }
+    const vergleich = boardSortierung === 'tags'
+      ? (a: TaskRow, b: TaskRow) => tagRang(a) - tagRang(b) || nachFaelligkeit(a, b)
+      : nachFaelligkeit
     const namen = new Map<string, string>()
     members.forEach(m => { if (m.profile) namen.set(m.profile_id, m.profile.full_name) })
     // Zuständige, die kein Mitglied mehr sind, tauchen trotzdem auf
@@ -453,7 +515,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       const key = t.assignee_id ?? ''
       proPerson.set(key, [...(proPerson.get(key) ?? []), t])
     })
-    const eintraege = (id: string) => spaltenReihenfolge(proPerson.get(id) ?? [])
+    const eintraege = (id: string) => spaltenReihenfolge(proPerson.get(id) ?? [], vergleich)
     const spalten: { id: string; name: string; istIch: boolean; eintraege: ReturnType<typeof spaltenReihenfolge> }[] = []
     if (istMitglied || proPerson.has(userId)) {
       spalten.push({ id: userId, name: txt('Ich'), istIch: true, eintraege: eintraege(userId) })
@@ -467,7 +529,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     }
     return spalten
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, members, userId, istMitglied, nachTagFilter])
+  }, [tasks, members, userId, istMitglied, nachTagFilter, boardSortierung, tags])
 
   // Das persönliche Projekt «Eigene Tasks»: keine Firma, genau ein
   // Mitglied, alles mir zugewiesen. Es wird nicht verwaltet — weder
@@ -480,8 +542,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   // --- Task anlegen ---
   const handleCreateTask = async () => {
     setError('')
-    if (!taskForm.titel.trim() || !taskForm.due_date) {
-      setError(txt('Titel und Fertigstellungsdatum sind Pflichtfelder.'))
+    if (!taskForm.titel.trim()) {
+      setError(txt('Der Titel ist ein Pflichtfeld.'))
+      return
+    }
+    if (!subtaskParent && taskForm.wiederholung && !taskForm.due_date) {
+      setError(txt('Eine wiederkehrende Aufgabe braucht ein Fertigstellungsdatum.'))
       return
     }
     setLoading(true)
@@ -493,7 +559,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         titel: taskForm.titel,
         beschreibung: taskForm.beschreibung,
         assignee_id: taskForm.assignee_id || null,
-        due_date: taskForm.due_date,
+        // Leer = ohne Fälligkeitsdatum
+        due_date: taskForm.due_date || null,
         wiederholung: taskForm.wiederholung || null,
         parent_task_id: subtaskParent?.id ?? null,
         // Unter-Tasks landen im Ordner ihres Mutter-Tasks
@@ -552,11 +619,15 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
   const handleSaveDetail = async () => {
     setError('')
-    if (!detailForm.titel.trim() || !detailForm.due_date) {
-      setError(txt('Titel und Fertigstellungsdatum sind Pflichtfelder.'))
+    if (!detailForm.titel.trim()) {
+      setError(txt('Der Titel ist ein Pflichtfeld.'))
       return
     }
     if (!detailTask) return
+    if (!detailTask.parent_task_id && detailForm.wiederholung && !detailForm.due_date) {
+      setError(txt('Eine wiederkehrende Aufgabe braucht ein Fertigstellungsdatum.'))
+      return
+    }
     const taskId = detailTask.id
     const zielProjekt = detailForm.project_id !== detailTask.project_id
       ? moveProjekte.find(p => p.id === detailForm.project_id) ?? null
@@ -570,7 +641,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       titel: detailForm.titel,
       beschreibung: detailForm.beschreibung,
       assignee_id: detailForm.assignee_id || null,
-      due_date: detailForm.due_date,
+      // Leer = Fälligkeitsdatum wegnehmen
+      due_date: detailForm.due_date || null,
       wiederholung: detailForm.wiederholung || null,
       // Beim Umhängen fällt die Ordner-Zuordnung serverseitig weg
       folder_id: zielProjekt ? null : (detailForm.folder_id || null),
@@ -752,7 +824,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const res = await fetch(`/api/aufgaben/projekte/${project.id}/ordner`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: neuerFolderName }),
+      body: JSON.stringify({ name: neuerFolderName, farbe: neuerFolderFarbe || null }),
     })
     const result = await res.json()
     setFolderBusyId(null)
@@ -762,6 +834,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     }
     setFolders(prev => [...prev, result.folder])
     setNeuerFolderName('')
+    setNeuerFolderFarbe('')
   }
 
   const handleRenameFolder = async (folderId: string) => {
@@ -771,7 +844,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const res = await fetch(`/api/aufgaben/ordner/${folderId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: editFolderName }),
+      body: JSON.stringify({ name: editFolderName, farbe: editFolderFarbe || null }),
     })
     const result = await res.json()
     setFolderBusyId(null)
@@ -779,7 +852,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       setFolderError(result.error || txt('Ordner konnte nicht gespeichert werden.'))
       return
     }
-    setFolders(prev => prev.map(f => (f.id === folderId ? { ...f, name: result.folder.name } : f)))
+    setFolders(prev => prev.map(f => (f.id === folderId ? { ...f, name: result.folder.name, farbe: result.folder.farbe ?? null } : f)))
     setEditFolderId(null)
   }
 
@@ -829,11 +902,53 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     setTasks(prev => prev.map(t => (t.folder_id === folder.id ? { ...t, folder_id: null } : t)))
   }
 
+  const alsFarbe = (farbe: string | null | undefined): TagFarbe | '' =>
+    (TAG_FARBEN as readonly string[]).includes(farbe ?? '') ? (farbe as TagFarbe) : ''
+
+  // Aufgabe per Drag & Drop in einen anderen Ordner legen (null = ohne
+  // Ordner). Die Liste wird sofort umgestellt und bei einem Fehler
+  // zurückgesetzt. Unter-Tasks folgen ihrem Mutter-Task (DB-Trigger)
+  // und werden hier nur lokal nachgeführt. Eine Mail löst das nicht aus.
+  const verschiebeInOrdner = async (taskId: string, folderId: string | null) => {
+    const task = tasks.find(t => t.id === taskId)
+    if (!task || task.parent_task_id || (task.folder_id ?? null) === folderId) return
+    const vorher = task.folder_id
+    const setze = (ziel: string | null) =>
+      setTasks(prev => prev.map(t => (t.id === taskId || t.parent_task_id === taskId ? { ...t, folder_id: ziel } : t)))
+    setZiehFehler('')
+    setze(folderId)
+    // Das Ziel aufklappen, sonst verschwindet die Aufgabe scheinbar
+    setEingeklappt(prev => {
+      const key = folderId ?? 'ohne'
+      if (!prev.has(key)) return prev
+      const next = new Set(prev)
+      next.delete(key)
+      return next
+    })
+    try {
+      const res = await fetch(`/api/aufgaben/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder_id: folderId }),
+      })
+      if (!res.ok) {
+        const result = await res.json().catch(() => ({}))
+        setze(vorher)
+        setZiehFehler(result.error || txt('Die Aufgabe konnte nicht verschoben werden.'))
+      }
+    } catch {
+      setze(vorher)
+      setZiehFehler(txt('Die Aufgabe konnte nicht verschoben werden.'))
+    }
+  }
+
   const oeffneOrdnerVerwaltung = (folder?: FolderRow) => {
     setFolderError('')
     setNeuerFolderName('')
+    setNeuerFolderFarbe('')
     setEditFolderId(folder?.id ?? null)
     setEditFolderName(folder?.name ?? '')
+    setEditFolderFarbe(alsFarbe(folder?.farbe))
     setFolderModalOpen(true)
   }
 
@@ -1063,10 +1178,6 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
    */
   const handleImportAusfuehren = async () => {
     if (!importPlan) return
-    if (!importErsatzDatum) {
-      setImportFehler(txt('Bitte eine Fälligkeit für Aufgaben ohne Datum angeben.'))
-      return
-    }
     setImportFehler('')
     setImportLaeuft(true)
 
@@ -1109,7 +1220,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       titel: a.titel,
       beschreibung: a.beschreibung,
       assignee_id: a.zustaendigId,
-      due_date: a.faellig ?? importErsatzDatum,
+      // Ohne Ersatzdatum entsteht die Aufgabe ohne Fälligkeit
+      due_date: a.faellig ?? (importErsatzDatum || null),
       // Unter-Aufgaben erben den Ordner ihrer Mutter (DB-Trigger)
       folder_id: parent ? null : (a.ordner ? ordnerKarte.get(a.ordner.toLowerCase()) ?? null : null),
       parent_task_id: parent,
@@ -1144,7 +1256,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       .from('tasks')
       .select('*, assignee:profiles!tasks_assignee_id_fkey(id, full_name, email), notes:task_notes(count), tags:task_tag_zuordnungen(tag:task_tags(id, name, farbe))')
       .eq('project_id', project.id)
-      .order('due_date', { ascending: true })
+      .order('due_date', { ascending: true, nullsFirst: true })
 
     setImportLaeuft(false)
     if (neueOrdner.length > 0) setFolders(prev => [...prev, ...neueOrdner])
@@ -1164,7 +1276,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       .from('tasks')
       .select('*, assignee:profiles!tasks_assignee_id_fkey(id, full_name, email), notes:task_notes(count), tags:task_tag_zuordnungen(tag:task_tags(id, name, farbe))')
       .eq('project_id', project.id)
-      .order('due_date', { ascending: true })
+      .order('due_date', { ascending: true, nullsFirst: true })
     if (data) setTasks(data as unknown as TaskRow[])
   }, [supabase, project.id])
 
@@ -1227,11 +1339,58 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     </label>
   )
 
-  const renderTaskRow = (task: TaskRow, istKind = false) => (
-    <button
+  // Farbwahl im Ordner-Dialog: dieselben Farben wie bei den Tags,
+  // dazu «Ohne Farbe»
+  const renderOrdnerFarbwahl = (wert: TagFarbe | '', setze: (f: TagFarbe | '') => void) => (
+    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={txt('Farbe des Ordners')}>
+      <button
+        type="button"
+        onClick={() => setze('')}
+        aria-pressed={wert === ''}
+        className={`text-xs rounded-full px-2.5 py-0.5 border transition-colors ${wert === '' ? 'bg-gray-700 text-white border-gray-700' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'}`}
+      >
+        {txt('Ohne Farbe')}
+      </button>
+      {TAG_FARBEN.map(f => (
+        <button key={f} type="button" onClick={() => setze(f)} aria-pressed={wert === f} title={TAG_FARB_LABELS[f]}>
+          <TagChip name={TAG_FARB_LABELS[f]} farbe={f} aktiv={wert === f} size="sm" className={wert === f ? '' : TAG_CHIP_WAEHLBAR} />
+        </button>
+      ))}
+    </div>
+  )
+
+  // Die Zeile ist ein <div role="button"> statt eines <button>: Firefox
+  // lässt sich Schaltflächen nicht ziehen. Tastatur (Enter, Leertaste)
+  // und Fokus bleiben wie bei einer Schaltfläche.
+  const renderTaskRow = (task: TaskRow, istKind = false) => {
+    // Ziehen in einen anderen Ordner: offene Mutter-Tasks, sobald das
+    // Projekt Ordner hat. Unter-Tasks folgen ihrem Mutter-Task. Auf
+    // Touch-Geräten gibt es kein Ziehen — dort bleibt das Feld
+    // «Ordner» im Aufgaben-Dialog.
+    const ziehbar = darfTasksBearbeiten && folders.length > 0 && task.status === 'offen' && !task.parent_task_id
+    return (
+    <div
       key={task.id}
+      role="button"
+      tabIndex={0}
+      draggable={ziehbar}
+      onDragStart={ziehbar ? e => {
+        e.dataTransfer.setData('text/plain', task.id)
+        e.dataTransfer.effectAllowed = 'move'
+        // Verzögert: ändert sich die Seite noch im dragstart (die Gruppe
+        // «Ohne Ordner» erscheint), bricht Chrome das Ziehen sofort ab
+        setTimeout(() => setZiehtTaskId(task.id), 0)
+      } : undefined}
+      onDragEnd={ziehbar ? () => { setZiehtTaskId(null); setZielGruppe(null) } : undefined}
       onClick={() => openDetail(task)}
-      className={`w-full text-left bg-white rounded-lg border border-gray-200 shadow-sm p-4 hover:border-[#1a5276] transition-colors flex items-start sm:items-center justify-between gap-3 ${istKind ? 'ml-3 w-[calc(100%-0.75rem)] sm:ml-6 sm:w-[calc(100%-1.5rem)] border-l-4 border-l-[#d4e6f1]' : ''}`}
+      onKeyDown={e => {
+        if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault()
+          openDetail(task)
+        }
+      }}
+      title={ziehbar ? txt('Öffnen — oder in einen anderen Ordner ziehen') : undefined}
+      className={`w-full text-left bg-white rounded-lg border border-gray-200 shadow-sm p-4 hover:border-[#1a5276] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1a5276] cursor-pointer transition-colors flex items-start sm:items-center justify-between gap-3 ${ziehtTaskId === task.id ? 'opacity-50' : ''} ${istKind ? 'ml-3 w-[calc(100%-0.75rem)] sm:ml-6 sm:w-[calc(100%-1.5rem)] border-l-4 border-l-[#d4e6f1]' : ''}`}
     >
       <div className="min-w-0 flex-1">
         {/* Auf dem Handy zwei Zeilen: bei den üblichen langen Titeln
@@ -1246,9 +1405,15 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           </div>
         )}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-gray-500">
-          <span className={istUeberfaellig(task) ? 'text-red-600 font-semibold' : ''}>
-            Fällig: {formatDate(task.due_date)}
-          </span>
+          {hatFaelligkeit(task.due_date) ? (
+            <span className={istUeberfaellig(task) ? 'text-red-600 font-semibold' : ''}>
+              Fällig: {formatDate(task.due_date)}
+            </span>
+          ) : (
+            <span className={`inline-flex items-center gap-1 ${task.status === 'offen' ? 'text-amber-700 font-medium' : ''}`}>
+              <CalendarOff size={12} />{txt('Ohne Fälligkeitsdatum')}
+            </span>
+          )}
           <span>{task.assignee ? task.assignee.full_name : txt('Nicht zugewiesen')}</span>
           {task.wiederholung && (
             <span className="inline-flex items-center gap-1" title={wiederholungLabels(txt)[task.wiederholung]}>
@@ -1295,10 +1460,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           ? <Badge variant="default"><Archive size={11} className="mr-1" />{txt('Archiviert')}</Badge>
           : istUeberfaellig(task)
             ? <Badge variant="danger">{txt('Überfällig')}</Badge>
-            : <Badge variant="info">{txt('Offen')}</Badge>}
+            : istOhneFaelligkeit(task)
+              ? <Badge variant="warning" className="whitespace-nowrap">{txt('Fällig · ohne Datum')}</Badge>
+              : <Badge variant="info">{txt('Offen')}</Badge>}
       </div>
-    </button>
-  )
+    </div>
+  )}
 
   // Karte in der Personen-Ansicht: kompakter als die Listenzeile. Was
   // die Spalte schon sagt (die zuständige Person), fehlt; was die
@@ -1336,9 +1503,15 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           </div>
         )}
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-gray-500">
-          <span className={ueberfaellig ? 'text-red-600 font-semibold' : ''}>
-            {formatDate(task.due_date)}
-          </span>
+          {hatFaelligkeit(task.due_date) ? (
+            <span className={ueberfaellig ? 'text-red-600 font-semibold' : ''}>
+              {formatDate(task.due_date)}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
+              <CalendarOff size={12} />{txt('Ohne Fälligkeitsdatum')}
+            </span>
+          )}
           {task.vertraulich && (
             <span className="inline-flex items-center gap-1 text-amber-700" title={txt('Nur für Beteiligte sichtbar')}>
               <Lock size={12} />{txt('Vertraulich')}
@@ -1367,7 +1540,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           )}
           {ordner && (
             <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
-              <Folder size={12} className="shrink-0" />
+              <Folder size={12} className={`shrink-0 ${ordnerFarbKlassen(ordner.farbe)?.symbol ?? ''}`} />
               <span className="truncate">{ordner.name}</span>
             </span>
           )}
@@ -1486,6 +1659,22 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             nur eine Person, da bleibt die Ordner-Liste */}
         {tab === 'offen' && !istEigenesProjekt && (
           <div className="ml-auto flex items-center gap-0.5 mb-1.5" role="group" aria-label={txt('Anordnung')}>
+            {/* Sortierung der Karten — nur in den Personen-Spalten; die
+                Ordner-Liste bleibt nach Fälligkeit geordnet */}
+            {ansicht === 'personen' && (
+              <label className="inline-flex items-center gap-1 mr-1 text-xs text-gray-500" title={txt('Sortierung innerhalb der Spalten')}>
+                <ArrowDownUp size={14} className="shrink-0" />
+                <span className="sr-only">{txt('Sortierung innerhalb der Spalten')}</span>
+                <select
+                  value={boardSortierung}
+                  onChange={e => sortierungWaehlen(e.target.value === 'tags' ? 'tags' : 'datum')}
+                  className="py-1.5 pl-1.5 pr-6 border border-gray-200 rounded-md text-xs bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
+                >
+                  <option value="datum">{txt('Nach Datum')}</option>
+                  <option value="tags">{txt('Nach Tags')}</option>
+                </select>
+              </label>
+            )}
             {([
               { wert: 'ordner', Icon: LayoutList, label: txt('Nach Ordnern') },
               { wert: 'personen', Icon: Columns3, label: txt('Nach Personen') },
@@ -1592,6 +1781,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
       {tab === 'offen' && (ansicht === 'ordner' || istEigenesProjekt) && (
         <div className="flex flex-col gap-3">
+          {ziehFehler && (
+            <p role="alert" className="p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-700 flex items-center justify-between gap-3">
+              <span>{ziehFehler}</span>
+              <button type="button" onClick={() => setZiehFehler('')} title={txt('Schliessen')} className="shrink-0 p-1 hover:text-red-900"><X size={14} /></button>
+            </p>
+          )}
           {offeneAnzahl === 0 && folders.length === 0 && (
             <p className="text-sm text-gray-500 py-8 text-center">{txt('Keine offenen Tasks.')}</p>
           )}
@@ -1611,8 +1806,27 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             }
             const key = folder?.id ?? 'ohne'
             const offen = !eingeklappt.has(key)
+            const farbe = ordnerFarbKlassen(folder?.farbe)
+            // Ablageziel, solange eine Aufgabe aus einer ANDEREN Gruppe gezogen wird
+            const gezogen = ziehtTaskId ? tasks.find(t => t.id === ziehtTaskId) : null
+            const istZiel = !!gezogen && (gezogen.folder_id ?? null) !== (folder?.id ?? null)
             return (
-              <section key={key} className="rounded-lg border border-gray-200 bg-gray-50/70 overflow-hidden">
+              <section
+                key={key}
+                onDragOver={istZiel ? e => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  if (zielGruppe !== key) setZielGruppe(key)
+                } : undefined}
+                onDrop={istZiel ? e => {
+                  e.preventDefault()
+                  const id = e.dataTransfer.getData('text/plain') || ziehtTaskId
+                  setZiehtTaskId(null)
+                  setZielGruppe(null)
+                  if (id) verschiebeInOrdner(id, folder?.id ?? null)
+                } : undefined}
+                className={`rounded-lg border bg-gray-50/70 overflow-hidden transition-shadow ${farbe ? `border-l-4 ${farbe.rand}` : ''} ${istZiel && zielGruppe === key ? 'border-[#1a5276] ring-2 ring-[#1a5276]/40' : istZiel ? 'border-dashed border-[#1a5276]/60' : 'border-gray-200'}`}
+              >
                 <div className="flex items-center border-b border-gray-200 bg-white">
                   <button
                     onClick={() => toggleGruppe(key)}
@@ -1622,7 +1836,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     {offen
                       ? <ChevronDown size={16} className="text-gray-400 shrink-0" />
                       : <ChevronRight size={16} className="text-gray-400 shrink-0" />}
-                    <Folder size={15} className={`shrink-0 ${folder ? 'text-[#1a5276]' : 'text-gray-400'}`} />
+                    <Folder size={15} className={`shrink-0 ${folder ? (farbe?.symbol ?? 'text-[#1a5276]') : 'text-gray-400'}`} />
                     <span className={`text-sm font-semibold truncate ${folder ? 'text-gray-800' : 'text-gray-500'}`}>
                       {folder ? folder.name : 'Ohne Ordner'}
                     </span>
@@ -1646,7 +1860,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       </button>
                       {folder && (
                         <button
-                          title={txt('Ordner umbenennen')}
+                          title={txt('Ordner bearbeiten (Name, Farbe)')}
                           onClick={() => oeffneOrdnerVerwaltung(folder)}
                           className="p-2.5 text-gray-400 hover:text-[#1a5276] hover:bg-gray-100 rounded-md transition-colors"
                         >
@@ -1659,7 +1873,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 {offen && (
                   <div className="flex flex-col gap-2 p-2 sm:p-3">
                     {eintraege.length === 0
-                      ? <p className="text-xs text-gray-400 py-3 text-center">{txt('Keine offenen Aufgaben in diesem Ordner.')}</p>
+                      ? <p className="text-xs text-gray-400 py-3 text-center">{istZiel ? txt('Hier ablegen') : folder ? txt('Keine offenen Aufgaben in diesem Ordner.') : txt('Keine offenen Aufgaben ohne Ordner.')}</p>
                       : eintraege.map(({ task, istKind }) => renderTaskRow(task, istKind))}
                   </div>
                 )}
@@ -1744,7 +1958,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               )}
             </div>
             <Input
-              label={txt('Fertigstellungsdatum *')}
+              label={txt('Fertigstellungsdatum')}
+              helpText={txt('Freiwillig. Ohne Datum gilt die Aufgabe als fällig.')}
               className="text-base sm:text-sm"
               type="date"
               value={taskForm.due_date}
@@ -1783,6 +1998,11 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           {subtaskParent && subtaskParent.folder_id && (
             <p className="text-xs text-gray-500">
               Der Unter-Task liegt im Ordner «{folders.find(f => f.id === subtaskParent.folder_id)?.name ?? txt('Unbekannt')}» des Mutter-Tasks.
+            </p>
+          )}
+          {tags.length === 0 && !istEigenesProjekt && (
+            <p className="text-xs text-gray-500">
+              {txt('Für diese Firma gibt es noch keine Tags. Anlegen kann sie die Projektverwaltung (Knopf «Tags» im Projekt); zuweisen kann sie danach jedes Projektmitglied.')}
             </p>
           )}
           {/* Tags der Firma — Mehrfachauswahl */}
@@ -1915,7 +2135,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     )}
                   </div>
                   <Input
-                    label={txt('Fertigstellungsdatum *')}
+                    label={txt('Fertigstellungsdatum')}
+                    helpText={txt('Freiwillig. Ohne Datum gilt die Aufgabe als fällig.')}
                     className="text-base sm:text-sm"
                     type="date"
                     value={detailForm.due_date}
@@ -1962,7 +2183,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                     Ordner: «{folders.find(f => f.id === detailTask.folder_id)?.name ?? txt('Unbekannt')}» — Unter-Tasks folgen dem Ordner des Mutter-Tasks.
                   </p>
                 )}
-                {/* Tags der Firma — Mehrfachauswahl */}
+                {tags.length === 0 && !istEigenesProjekt && (
+                  <p className="text-xs text-gray-500">
+                    {txt('Für diese Firma gibt es noch keine Tags. Anlegen kann sie die Projektverwaltung (Knopf «Tags» im Projekt); zuweisen kann sie danach jedes Projektmitglied.')}
+                  </p>
+                )}
+{/* Tags der Firma — Mehrfachauswahl */}
                 {tags.length > 0 && (
                   <div className="flex flex-col gap-1">
                     <label className="text-sm font-medium text-gray-700">{txt('Tags')}</label>
@@ -2036,7 +2262,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 )}
                 {detailTask.beschreibung && <TextMitLinks text={detailTask.beschreibung} className="mt-1 whitespace-pre-wrap" />}
                 <div className="flex flex-wrap gap-4 mt-3 text-xs text-gray-500">
-                  <span>Fällig: {formatDate(detailTask.due_date)}</span>
+                  <span>{hatFaelligkeit(detailTask.due_date) ? <>Fällig: {formatDate(detailTask.due_date)}</> : txt('Ohne Fälligkeitsdatum')}</span>
                   <span>Zuständig: {detailTask.assignee?.full_name ?? txt('Nicht zugewiesen')}</span>
                   {detailTask.folder_id && (
                     <span>Ordner: {folders.find(f => f.id === detailTask.folder_id)?.name ?? txt('Unbekannt')}</span>
@@ -2071,7 +2297,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                 </div>
                 <div className="flex flex-col gap-1">
                   {detailKinder
-                    .sort((a, b) => a.due_date.localeCompare(b.due_date))
+                    .sort(nachFaelligkeit)
                     .map(kind => (
                       <button
                         key={kind.id}
@@ -2083,7 +2309,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                           {kind.titel}
                         </span>
                         <span className="flex items-center gap-2 shrink-0 text-xs text-gray-500">
-                          {formatDate(kind.due_date)}
+                          {hatFaelligkeit(kind.due_date) ? formatDate(kind.due_date) : txt('ohne Datum')}
                           {kind.status === 'geschlossen'
                             ? <CheckCircle2 size={14} className="text-green-600" />
                             : istUeberfaellig(kind)
@@ -2268,6 +2494,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           Ordner gliedern die Aufgaben dieses Projekts. Jede Aufgabe kann einem
           Ordner zugewiesen werden und erscheint dann in dessen Gruppe;
           Unter-Tasks folgen automatisch dem Ordner ihres Mutter-Tasks.
+          In der Ordner-Liste lässt sich eine Aufgabe mit der Maus in einen anderen Ordner ziehen.
           Löschen ist erst möglich, wenn keine offenen Aufgaben mehr im Ordner liegen.
         </p>
         {folderError && <p className="text-sm text-red-600 mb-3">{folderError}</p>}
@@ -2282,7 +2509,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             return (
               <div key={f.id} className="px-3 py-2">
                 {editFolderId === f.id ? (
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <div className="flex flex-col gap-2">
                     <input
                       value={editFolderName}
                       onChange={e => setEditFolderName(e.target.value)}
@@ -2291,6 +2518,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       maxLength={100}
                       className="min-w-0 flex-1 px-3 py-2 border border-gray-300 rounded-md text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#1a5276]"
                     />
+                    {renderOrdnerFarbwahl(editFolderFarbe, setEditFolderFarbe)}
                     <div className="flex items-center gap-2">
                       <Button
                         size="sm"
@@ -2308,7 +2536,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <Folder size={15} className="text-[#1a5276] shrink-0" />
+                    <Folder size={15} className={`shrink-0 ${ordnerFarbKlassen(f.farbe)?.symbol ?? 'text-[#1a5276]'}`} />
                     <div className="min-w-0 flex-1">
                       <div className="text-sm text-gray-800 truncate">{f.name}</div>
                       <div className="text-xs text-gray-400">
@@ -2333,8 +2561,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                         <ArrowDown size={15} />
                       </button>
                       <button
-                        title={txt('Umbenennen')}
-                        onClick={() => { setFolderError(''); setEditFolderId(f.id); setEditFolderName(f.name) }}
+                        title={txt('Name und Farbe ändern')}
+                        onClick={() => { setFolderError(''); setEditFolderId(f.id); setEditFolderName(f.name); setEditFolderFarbe(alsFarbe(f.farbe)) }}
                         className="p-2.5 text-gray-400 hover:text-[#1a5276] transition-colors"
                       >
                         <Pencil size={15} />
@@ -2374,6 +2602,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             <Plus size={16} /> Anlegen
           </Button>
         </div>
+        <div className="mt-2">{renderOrdnerFarbwahl(neuerFolderFarbe, setNeuerFolderFarbe)}</div>
       </Modal>
 
       {/* Tags verwalten (nur Verwalter) — Tags gehören zur FIRMA,
@@ -2667,7 +2896,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
               {importPlan.ohneDatum > 0 && (
                 <Input
-                  label={txt('Fälligkeit für Aufgaben ohne Datum *')}
+                  label={txt('Fälligkeit für Aufgaben ohne Datum')}
+                  helpText={txt('Leer lassen: diese Aufgaben entstehen ohne Fälligkeitsdatum und gelten als fällig.')}
                   className="text-base sm:text-sm"
                   type="date"
                   value={importErsatzDatum}
@@ -2684,8 +2914,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                       <div className="flex items-start justify-between gap-3">
                         <span className="text-gray-800">{a.titel}</span>
                         <span className="text-xs text-gray-500 shrink-0">
-                          {formatDate(a.faellig ?? importErsatzDatum)}
-                          {!a.faellig && ' *'}
+                          {a.faellig ?? importErsatzDatum ? formatDate((a.faellig ?? importErsatzDatum) as string) : txt('Ohne Fälligkeitsdatum')}
+                          {!a.faellig && importErsatzDatum && ' *'}
                         </span>
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3">

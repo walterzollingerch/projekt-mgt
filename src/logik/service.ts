@@ -1,6 +1,7 @@
 import type { Db, Result } from '../typen'
 import { istTagFarbe, type TagFarbe } from './tags'
 import { hostLesen } from '../host'
+import { hatFaelligkeit } from './faelligkeit'
 import {
   sendTaskAssignedMail,
   sendTaskUnassignedMail,
@@ -48,6 +49,17 @@ export const TASK_SELECT =
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 export type Wiederholung = 'woechentlich' | 'monatlich' | 'jaehrlich'
+
+const OHNE_DATUM_KEINE_WIEDERHOLUNG =
+  'Eine wiederkehrende Aufgabe braucht ein Fertigstellungsdatum — daraus wird der nächste Termin berechnet.'
+
+// Eingabe des Fertigstellungsdatums lesen: ein ISO-Tag, `null` für
+// «ohne Datum» (auch leer oder nicht angegeben) oder `undefined`
+// bei ungültiger Eingabe.
+function fertigstellungsdatum(wert: unknown): string | null | undefined {
+  if (wert === undefined || wert === null || wert === '') return null
+  return typeof wert === 'string' && DATE_RE.test(wert) ? wert : undefined
+}
 const WIEDERHOLUNGEN: Wiederholung[] = ['woechentlich', 'monatlich', 'jaehrlich']
 
 interface Empfaenger {
@@ -319,9 +331,12 @@ export async function removeProjectMember(supabase: Db, userId: string, projectI
 // ------------------------------------------------------------
 
 // Ordner in einem Projekt anlegen (neue Ordner hinten anhängen)
-export async function createFolder(supabase: Db, userId: string, projectId: string, name: unknown) {
+export async function createFolder(supabase: Db, userId: string, projectId: string, name: unknown, farbe?: unknown) {
   if (!name || typeof name !== 'string' || !name.trim() || name.length > 100)
     return fail(400, 'Ungültiger Ordnername.')
+  // Farbe ist freiwillig (sql/modul/16); ohne Angabe bleibt der Ordner farblos
+  if (farbe !== undefined && farbe !== null && farbe !== '' && !istTagFarbe(farbe))
+    return fail(400, 'Ungültige Farbe.')
 
   const { data: letzter } = await supabase
     .from('project_folders')
@@ -336,10 +351,11 @@ export async function createFolder(supabase: Db, userId: string, projectId: stri
     .insert({
       project_id: projectId,
       name: name.trim(),
+      farbe: istTagFarbe(farbe) ? farbe : null,
       position: (letzter?.position ?? -1) + 1,
       created_by: userId,
     })
-    .select('id, project_id, name, position')
+    .select('id, project_id, name, farbe, position')
     .single()
 
   if (error || !folder) {
@@ -353,12 +369,19 @@ export async function createFolder(supabase: Db, userId: string, projectId: stri
 
 export interface UpdateFolderInput {
   name?: unknown
+  /** Eine der Tag-Farben; null oder '' nimmt die Farbe weg */
+  farbe?: unknown
   position?: unknown
 }
 
-// Ordner umbenennen oder verschieben
+// Ordner umbenennen, umfärben oder verschieben
 export async function updateFolder(supabase: Db, folderId: string, input: UpdateFolderInput) {
-  const payload: { name?: string; position?: number } = {}
+  const payload: { name?: string; farbe?: TagFarbe | null; position?: number } = {}
+  if (input.farbe !== undefined) {
+    if (input.farbe === null || input.farbe === '') payload.farbe = null
+    else if (istTagFarbe(input.farbe)) payload.farbe = input.farbe
+    else return fail(400, 'Ungültige Farbe.')
+  }
 
   if (typeof input.name === 'string') {
     if (!input.name.trim() || input.name.length > 100)
@@ -374,7 +397,7 @@ export async function updateFolder(supabase: Db, folderId: string, input: Update
     .from('project_folders')
     .update(payload)
     .eq('id', folderId)
-    .select('id, project_id, name, position')
+    .select('id, project_id, name, farbe, position')
     .single()
 
   if (error || !folder) {
@@ -638,8 +661,11 @@ export async function createTask(
     return fail(400, 'Ungültige Projekt-ID.')
   if (!titel || typeof titel !== 'string' || !titel.trim() || titel.length > 300)
     return fail(400, 'Ungültiger Titel.')
-  if (!due_date || typeof due_date !== 'string' || !DATE_RE.test(due_date))
-    return fail(400, 'Ungültiges Fertigstellungsdatum.')
+  // Das Datum ist freiwillig (sql/modul/16): ohne Datum gilt die
+  // Aufgabe als fällig — siehe ./faelligkeit
+  const faellig = fertigstellungsdatum(due_date)
+  if (faellig === undefined) return fail(400, 'Ungültiges Fertigstellungsdatum.')
+  if (wiederholung && !parent_task_id && !faellig) return fail(400, OHNE_DATUM_KEINE_WIEDERHOLUNG)
   if (assignee_id && (typeof assignee_id !== 'string' || !UUID_RE.test(assignee_id)))
     return fail(400, 'Ungültiger Zuständiger.')
   if (wiederholung && !WIEDERHOLUNGEN.includes(wiederholung as Wiederholung))
@@ -668,7 +694,7 @@ export async function createTask(
       titel: titel.trim(),
       beschreibung: typeof beschreibung === 'string' && beschreibung.trim() ? beschreibung.trim() : null,
       assignee_id: (assignee_id as string) || null,
-      due_date,
+      due_date: faellig,
       // Unter-Tasks wiederholen sich nicht — der Folge-Task eines
       // Mutter-Tasks entsteht ohne Unter-Tasks
       wiederholung: parent_task_id ? null : ((wiederholung as Wiederholung) || null),
@@ -756,7 +782,7 @@ export async function updateTask(
   // Bisherigen Stand laden (für Änderungs-Diff, Umhängen und Mails)
   const { data: current } = await supabase
     .from('tasks')
-    .select('id, titel, due_date, assignee_id, status, project_id, parent_task_id, vertraulich, assignee:profiles!tasks_assignee_id_fkey(id, full_name, email)')
+    .select('id, titel, due_date, wiederholung, assignee_id, status, project_id, parent_task_id, vertraulich, assignee:profiles!tasks_assignee_id_fkey(id, full_name, email)')
     .eq('id', id)
     .single()
   if (!current) return fail(404, 'Task nicht gefunden.')
@@ -765,7 +791,7 @@ export async function updateTask(
     titel?: string
     beschreibung?: string | null
     assignee_id?: string | null
-    due_date?: string
+    due_date?: string | null
     wiederholung?: Wiederholung | null
     folder_id?: string | null
     project_id?: string
@@ -788,14 +814,25 @@ export async function updateTask(
       return fail(400, 'Ungültiger Zuständiger.')
     payload.assignee_id = input.assignee_id as string | null
   }
-  if (typeof input.due_date === 'string') {
-    if (!DATE_RE.test(input.due_date)) return fail(400, 'Ungültiges Fertigstellungsdatum.')
-    payload.due_date = input.due_date
+  // Fälligkeit: nicht mitgeschickt = unverändert, null oder '' =
+  // Datum wegnehmen (sql/modul/16)
+  if (input.due_date !== undefined) {
+    const faellig = fertigstellungsdatum(input.due_date)
+    if (faellig === undefined) return fail(400, 'Ungültiges Fertigstellungsdatum.')
+    payload.due_date = faellig
   }
   if ('wiederholung' in input) {
     if (input.wiederholung !== null && !WIEDERHOLUNGEN.includes(input.wiederholung as Wiederholung))
       return fail(400, 'Ungültige Wiederholung.')
     payload.wiederholung = input.wiederholung as Wiederholung | null
+  }
+  // Der Folge-Task einer Wiederholung wird aus der Fälligkeit
+  // berechnet — beides zusammen betrachten, egal welches der beiden
+  // Felder diese Änderung anfasst
+  {
+    const regel = 'wiederholung' in payload ? payload.wiederholung : current.wiederholung
+    const datum = 'due_date' in payload ? payload.due_date : current.due_date
+    if (regel && !datum) return fail(400, OHNE_DATUM_KEINE_WIEDERHOLUNG)
   }
   // Ordner-Zuweisung. Unter-Tasks liegen immer im Ordner ihres
   // Mutter-Tasks — der DB-Trigger führt das nach, das Feld wird hier
@@ -993,7 +1030,7 @@ export async function updateTask(
   // Wiederkehrender Task: beim Schliessen den Folge-Task gemäss
   // Regel erstellen (gleicher Titel/Beschreibung/Zuständiger)
   let folgeTask = null
-  if (wurdeGeschlossen && task.wiederholung) {
+  if (wurdeGeschlossen && task.wiederholung && hatFaelligkeit(task.due_date)) {
     const { data: neu, error: folgeError } = await supabase
       .from('tasks')
       .insert({
@@ -1047,7 +1084,7 @@ export async function updateTask(
   const aenderungen: string[] = []
   if (payload.titel && payload.titel !== current.titel)
     aenderungen.push(`Titel: «${current.titel}» → «${payload.titel}»`)
-  if (payload.due_date && payload.due_date !== current.due_date)
+  if ('due_date' in payload && payload.due_date !== current.due_date)
     aenderungen.push(`Fälligkeit: ${formatDatum(current.due_date)} → ${formatDatum(payload.due_date)}`)
   if (payload.status === 'offen' && current.status !== 'offen')
     aenderungen.push('Status: reaktiviert (offen)')

@@ -51,6 +51,25 @@ export const TAG_FARB_KLASSEN_AKTIV: Record<TagFarbe, string> = {
   tuerkis: 'bg-teal-600 text-white border-teal-600',
 }
 
+// Ordner tragen dieselbe Farbauswahl (sql/modul/16). Gefärbt werden
+// das Ordner-Symbol und der linke Rand der Gruppe — dezent genug,
+// dass die Tag-Chips auf den Aufgaben die lautere Auszeichnung bleiben.
+export const ORDNER_FARB_KLASSEN: Record<TagFarbe, { symbol: string; rand: string }> = {
+  grau: { symbol: 'text-gray-500', rand: 'border-l-gray-400' },
+  blau: { symbol: 'text-blue-600', rand: 'border-l-blue-500' },
+  gruen: { symbol: 'text-green-600', rand: 'border-l-green-500' },
+  gelb: { symbol: 'text-yellow-500', rand: 'border-l-yellow-400' },
+  orange: { symbol: 'text-orange-500', rand: 'border-l-orange-400' },
+  rot: { symbol: 'text-red-600', rand: 'border-l-red-500' },
+  violett: { symbol: 'text-purple-600', rand: 'border-l-purple-500' },
+  tuerkis: { symbol: 'text-teal-600', rand: 'border-l-teal-500' },
+}
+
+/** Klassen für einen Ordner; null, wenn er keine Farbe hat */
+export function ordnerFarbKlassen(farbe: string | null | undefined): { symbol: string; rand: string } | null {
+  return istTagFarbe(farbe) ? ORDNER_FARB_KLASSEN[farbe] : null
+}
+
 export function istTagFarbe(wert: unknown): wert is TagFarbe {
   return typeof wert === 'string' && (TAG_FARBEN as readonly string[]).includes(wert)
 }

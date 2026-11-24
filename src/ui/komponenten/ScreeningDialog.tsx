@@ -761,11 +761,11 @@ function AktionZeile({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <Input
                 type="date"
-                label={a.typ === 'neu' ? txt('Fälligkeit') : txt('Neue Fälligkeit (leer = unverändert)')}
+                label={a.typ === 'neu' ? txt('Fälligkeit (leer = ohne Datum)') : txt('Neue Fälligkeit (leer = unverändert)')}
                 value={a.faellig ?? ''}
                 onChange={e =>
                   setzeAktion(index, {
-                    faellig: a.typ === 'neu' ? e.target.value : e.target.value || null,
+                    faellig: e.target.value || null,
                   } as Partial<ScreeningAktion>)
                 }
               />
@@ -851,7 +851,7 @@ function zusammenfassung(
     case 'notiz':
       return a.text.length > 160 ? `${a.text.slice(0, 160)}…` : a.text
     case 'neu': {
-      const teile = [txt('fällig {0}', formatDate(a.faellig))]
+      const teile = [a.faellig ? txt('fällig {0}', formatDate(a.faellig)) : txt('ohne Fälligkeitsdatum')]
       if (a.zustaendigId) teile.push(txt('für {0}', personName(a.zustaendigId)))
       teile.push(txt('in «{0}»', projektName(a.projektId)))
       return teile.join(' · ')
