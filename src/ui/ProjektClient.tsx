@@ -178,10 +178,13 @@ const nachFaelligkeit = (a: TaskRow, b: TaskRow) => vergleicheFaelligkeit(a.due_
 
 // Offene Tasks hierarchisch ordnen: Mutter-Tasks nach Fälligkeit,
 // ihre offenen Unter-Tasks direkt eingerückt darunter
-function hierarchisch(offen: TaskRow[]): { task: TaskRow; istKind: boolean }[] {
+function hierarchisch(
+  offen: TaskRow[],
+  vergleich: (a: TaskRow, b: TaskRow) => number = nachFaelligkeit
+): { task: TaskRow; istKind: boolean }[] {
   const wurzeln = offen
     .filter(t => !t.parent_task_id)
-    .sort(nachFaelligkeit)
+    .sort(vergleich)
   const result: { task: TaskRow; istKind: boolean }[] = []
   for (const wurzel of wurzeln) {
     result.push({ task: wurzel, istKind: false })
@@ -234,11 +237,17 @@ function istOhneFaelligkeit(task: TaskRow): boolean {
   return task.status === 'offen' && !hatFaelligkeit(task.due_date)
 }
 
-// Wie die offenen Aufgaben angeordnet sind: als Liste nach Ordnern
-// oder als Spalten nach zuständiger Person. Die Wahl ist eine
-// persönliche Gewohnheit und keine Eigenschaft des Projekts — sie
-// liegt deshalb im Browser, nicht in der Datenbank.
-type Ansicht = 'ordner' | 'personen'
+// Wie die offenen Aufgaben angeordnet sind: als Liste nach Ordnern,
+// als Board mit einer Spalte je Ordner oder als Board mit einer
+// Spalte je zuständiger Person. Die Wahl ist eine persönliche
+// Gewohnheit und keine Eigenschaft des Projekts — sie liegt deshalb
+// im Browser, nicht in der Datenbank.
+//
+// Das Ordner-Board ist das, was andere Werkzeuge «Board» nennen: Die
+// Spalten sind die Ordner, also frei benannt und beliebig viele. Es
+// gibt es auch in «Eigene Tasks» — dort ist das Personen-Board
+// sinnlos, weil alles derselben Person gehört.
+type Ansicht = 'ordner' | 'board' | 'personen'
 const ANSICHT_SCHLUESSEL = 'projekt-mgt.ansicht'
 
 // Sortierung der Karten in den Personen-Spalten — wie die Ansicht
@@ -256,7 +265,8 @@ function gespeicherteSortierung(): BoardSortierung {
 
 function gespeicherteAnsicht(): Ansicht {
   try {
-    return localStorage.getItem(ANSICHT_SCHLUESSEL) === 'personen' ? 'personen' : 'ordner'
+    const wert = localStorage.getItem(ANSICHT_SCHLUESSEL)
+    return wert === 'personen' || wert === 'board' ? wert : 'ordner'
   } catch {
     return 'ordner'
   }
@@ -485,6 +495,20 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const istMitglied = members.some(m => m.profile_id === userId)
   const darfTasksBearbeiten = isManager || istMitglied
 
+  // Sortierung der Karten in beiden Boards. Nach Tags: in der
+  // Reihenfolge der Tag-Pflege nach dem ersten Tag der Aufgabe,
+  // Aufgaben ohne Tag zuletzt; innerhalb desselben Tags nach Fälligkeit
+  const boardVergleich = useMemo(() => {
+    if (boardSortierung !== 'tags') return nachFaelligkeit
+    const tagRang = (t: TaskRow) => {
+      const erster = tagsVonTask(t.tags, tags)[0]
+      if (!erster) return Number.MAX_SAFE_INTEGER
+      const i = tags.findIndex(g => g.id === erster.id)
+      return i === -1 ? Number.MAX_SAFE_INTEGER - 1 : i
+    }
+    return (a: TaskRow, b: TaskRow) => tagRang(a) - tagRang(b) || nachFaelligkeit(a, b)
+  }, [boardSortierung, tags])
+
   // Offene Tasks nach zuständiger Person: «Ich» zuerst, dann die
   // anderen alphabetisch, «Nicht zugewiesen» zuletzt. Gezeigt wird,
   // wer offene Aufgaben hat — ausser mir selbst: meine Spalte steht
@@ -494,18 +518,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   const personenSpalten = useMemo(() => {
     const offen = nachTagFilter(tasks.filter(t => t.status === 'offen'))
       .sort(nachFaelligkeit)
-    // Sortierung nach Tags: in der Reihenfolge der Tag-Pflege nach dem
-    // ersten Tag der Aufgabe, Aufgaben ohne Tag zuletzt; innerhalb
-    // desselben Tags nach Fälligkeit
-    const tagRang = (t: TaskRow) => {
-      const erster = tagsVonTask(t.tags, tags)[0]
-      if (!erster) return Number.MAX_SAFE_INTEGER
-      const i = tags.findIndex(g => g.id === erster.id)
-      return i === -1 ? Number.MAX_SAFE_INTEGER - 1 : i
-    }
-    const vergleich = boardSortierung === 'tags'
-      ? (a: TaskRow, b: TaskRow) => tagRang(a) - tagRang(b) || nachFaelligkeit(a, b)
-      : nachFaelligkeit
+    const vergleich = boardVergleich
     const namen = new Map<string, string>()
     members.forEach(m => { if (m.profile) namen.set(m.profile_id, m.profile.full_name) })
     // Zuständige, die kein Mitglied mehr sind, tauchen trotzdem auf
@@ -532,7 +545,20 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     }
     return spalten
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, members, userId, istMitglied, nachTagFilter, boardSortierung, tags, ziehtTaskId])
+  }, [tasks, members, userId, istMitglied, nachTagFilter, boardVergleich, ziehtTaskId])
+
+  // Ordner-Board: eine Spalte je Ordner, davor «Ohne Ordner». Anders
+  // als in der Liste steht jede Spalte immer da, auch leer — sie ist
+  // das Ziel, in das man eine Karte zieht.
+  const ordnerSpalten = useMemo(() => {
+    const offen = nachTagFilter(tasks.filter(t => t.status === 'offen'))
+    const bekannt = new Set(folders.map(f => f.id))
+    const spalten: { folder: FolderRow | null; eintraege: { task: TaskRow; istKind: boolean }[] }[] = [
+      { folder: null, eintraege: hierarchisch(offen.filter(t => !t.folder_id || !bekannt.has(t.folder_id)), boardVergleich) },
+      ...folders.map(f => ({ folder: f, eintraege: hierarchisch(offen.filter(t => t.folder_id === f.id), boardVergleich) })),
+    ]
+    return spalten
+  }, [tasks, folders, nachTagFilter, boardVergleich])
 
   // Das persönliche Projekt «Eigene Tasks»: keine Firma, genau ein
   // Mitglied, alles mir zugewiesen. Es wird nicht verwaltet — weder
@@ -541,6 +567,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   // auch für Projektverwalter.
   const istEigenesProjekt = istPersoenlich(project)
   const darfVerwalten = isManager && !istEigenesProjekt
+  // Wirksame Ansicht: im eigenen Projekt gibt es kein Personen-Board
+  const sicht: Ansicht = istEigenesProjekt && ansicht === 'personen' ? 'ordner' : ansicht
 
   // --- Task anlegen ---
   const handleCreateTask = async () => {
@@ -1515,7 +1543,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
   // ist die Karte eingerückt wie in der Liste. Gehört er einer anderen
   // Person, nennt die Karte ihn samt Person — und umgekehrt zählt der
   // Mutter-Task seine offenen Unter-Tasks auf, die bei anderen liegen.
-  const renderKarte = (task: TaskRow, unterMutter = false) => {
+  // `ordnerBoard`: die Karte steht im Ordner-Board. Dort sagt die
+  // Spalte den Ordner, also nennt die Karte stattdessen die Person;
+  // gezogen wird in einen anderen Ordner statt zu einer anderen Person.
+  const renderKarte = (task: TaskRow, unterMutter = false, ordnerBoard = false) => {
     const mutter = task.parent_task_id ? tasks.find(t => t.id === task.parent_task_id) : null
     const kinder = tasks.filter(t => t.parent_task_id === task.id)
     const kinderAnderswo = kinder.filter(k => k.status === 'offen' && k.assignee_id !== task.assignee_id)
@@ -1525,7 +1556,8 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     // Ziehen in die Spalte einer anderen Person wechselt die
     // Zuständigkeit. Wie die Listenzeile ein <div role="button">,
     // weil Firefox Schaltflächen nicht ziehen lässt.
-    const ziehbar = darfTasksBearbeiten && task.status === 'offen'
+    // Im Ordner-Board nur Mutter-Tasks — Unter-Tasks folgen ihrem Ordner
+    const ziehbar = darfTasksBearbeiten && task.status === 'offen' && (!ordnerBoard || !task.parent_task_id)
     return (
       <div
         key={task.id}
@@ -1546,7 +1578,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             openDetail(task)
           }
         }}
-        title={ziehbar ? txt('Öffnen — oder in die Spalte einer anderen Person ziehen') : undefined}
+        title={!ziehbar ? undefined : ordnerBoard ? txt('Öffnen — oder in eine andere Spalte ziehen') : txt('Öffnen — oder in die Spalte einer anderen Person ziehen')}
         className={`text-left bg-white rounded-lg border border-gray-200 shadow-sm p-3 hover:border-[#1a5276] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1a5276] cursor-pointer transition-colors flex flex-col gap-1.5 ${ziehtTaskId === task.id ? 'opacity-50' : ''} ${unterMutter ? 'ml-3 w-[calc(100%-0.75rem)] border-l-4 border-l-[#d4e6f1]' : 'w-full'}`}
       >
         {mutter && !unterMutter && (
@@ -1600,7 +1632,10 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               {kinder.filter(k => k.status === 'geschlossen').length}/{kinder.length}
             </span>
           )}
-          {ordner && (
+          {ordnerBoard && !istEigenesProjekt && (
+            <span className="truncate max-w-full">{personVon(task)}</span>
+          )}
+          {ordner && !ordnerBoard && (
             <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
               <Folder size={12} className={`shrink-0 ${ordnerFarbKlassen(ordner.farbe)?.symbol ?? ''}`} />
               <span className="truncate">{ordner.name}</span>
@@ -1717,13 +1752,13 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         >
           Archiv ({tasks.filter(t => t.status === 'geschlossen').length})
         </button>
-        {/* Anordnung der offenen Aufgaben — im eigenen Projekt gibt es
-            nur eine Person, da bleibt die Ordner-Liste */}
-        {tab === 'offen' && !istEigenesProjekt && (
+        {/* Anordnung der offenen Aufgaben — im eigenen Projekt ohne
+            das Personen-Board, dort gibt es nur eine Person */}
+        {tab === 'offen' && (
           <div className="ml-auto flex items-center gap-0.5 mb-1.5" role="group" aria-label={txt('Anordnung')}>
-            {/* Sortierung der Karten — nur in den Personen-Spalten; die
+            {/* Sortierung der Karten — in beiden Boards; die
                 Ordner-Liste bleibt nach Fälligkeit geordnet */}
-            {ansicht === 'personen' && (
+            {sicht !== 'ordner' && (
               <label className="inline-flex items-center gap-1 mr-1 text-xs text-gray-500" title={txt('Sortierung innerhalb der Spalten')}>
                 <ArrowDownUp size={14} className="shrink-0" />
                 <span className="sr-only">{txt('Sortierung innerhalb der Spalten')}</span>
@@ -1738,16 +1773,17 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
               </label>
             )}
             {([
-              { wert: 'ordner', Icon: LayoutList, label: txt('Nach Ordnern') },
-              { wert: 'personen', Icon: Columns3, label: txt('Nach Personen') },
-            ] as const).map(({ wert, Icon, label }) => (
+              { wert: 'ordner', Icon: LayoutList, label: txt('Liste') },
+              { wert: 'board', Icon: Columns3, label: txt('Board') },
+              { wert: 'personen', Icon: Users, label: txt('Nach Personen') },
+            ] as const).filter(o => !(istEigenesProjekt && o.wert === 'personen')).map(({ wert, Icon, label }) => (
               <button
                 key={wert}
                 type="button"
                 title={label}
-                aria-pressed={ansicht === wert}
+                aria-pressed={sicht === wert}
                 onClick={() => ansichtWaehlen(wert)}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${ansicht === wert ? 'bg-[#eaf2f8] text-[#1a5276]' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${sicht === wert ? 'bg-[#eaf2f8] text-[#1a5276]' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}
               >
                 <Icon size={15} />
                 <span className="hidden sm:inline">{label}</span>
@@ -1801,7 +1837,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         </p>
       )}
 
-      {tab === 'offen' && ansicht === 'personen' && !istEigenesProjekt && (
+      {tab === 'offen' && sicht === 'personen' && (
         personenSpalten.every(s => s.eintraege.length === 0) ? (
           <p className="text-sm text-gray-500 py-8 text-center">
             {filterTags.size > 0 ? txt('Keine offenen Aufgaben mit den gewählten Tags.') : txt('Keine offenen Tasks.')}
@@ -1873,7 +1909,94 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         )
       )}
 
-      {tab === 'offen' && (ansicht === 'ordner' || istEigenesProjekt) && (
+      {/* Ordner-Board: Spalte = Ordner. Spalten benennen, färben und
+          ergänzen heisst Ordner pflegen; eine Karte in eine andere
+          Spalte ziehen legt die Aufgabe in den anderen Ordner. */}
+      {tab === 'offen' && sicht === 'board' && (
+        <div className="-mx-4 px-4 overflow-x-auto pb-2">
+          <div className="flex items-start gap-3 sm:gap-4 min-w-max">
+            {ordnerSpalten.map(({ folder, eintraege }) => {
+              const key = folder?.id ?? 'ohne'
+              const farbe = ordnerFarbKlassen(folder?.farbe)
+              const gezogen = ziehtTaskId ? tasks.find(t => t.id === ziehtTaskId) : null
+              const istZiel = !!gezogen && (gezogen.folder_id ?? null) !== (folder?.id ?? null)
+              // «Ohne Ordner» nur zeigen, wenn dort etwas liegt, es noch
+              // keine Ordner gibt oder gerade gezogen wird
+              if (!folder && eintraege.length === 0 && folders.length > 0 && !ziehtTaskId) return null
+              return (
+                <section
+                  key={key}
+                  onDragOver={istZiel ? e => {
+                    e.preventDefault()
+                    e.dataTransfer.dropEffect = 'move'
+                    if (zielGruppe !== key) setZielGruppe(key)
+                  } : undefined}
+                  onDrop={istZiel ? e => {
+                    e.preventDefault()
+                    const id = e.dataTransfer.getData('text/plain') || ziehtTaskId
+                    setZiehtTaskId(null)
+                    setZielGruppe(null)
+                    if (id) verschiebeInOrdner(id, folder?.id ?? null)
+                  } : undefined}
+                  className={`w-[78vw] sm:w-72 shrink-0 rounded-lg border bg-gray-50/70 transition-shadow ${farbe ? `border-t-4 ${farbe.kopf}` : ''} ${istZiel && zielGruppe === key ? 'border-[#1a5276] ring-2 ring-[#1a5276]/40' : istZiel ? 'border-dashed border-[#1a5276]/60' : 'border-gray-200'}`}
+                >
+                  <div className="flex items-center gap-2 px-3 py-2.5 border-b border-gray-200 bg-white rounded-t-lg">
+                    <Folder size={15} className={`shrink-0 ${folder ? (farbe?.symbol ?? 'text-[#1a5276]') : 'text-gray-400'}`} />
+                    <span className={`text-sm font-semibold truncate ${folder ? 'text-gray-800' : 'text-gray-500'}`}>
+                      {folder ? folder.name : txt('Ohne Ordner')}
+                    </span>
+                    <span className="shrink-0 text-xs text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">
+                      {eintraege.length}
+                    </span>
+                    {darfTasksBearbeiten && (
+                      <span className="ml-auto flex items-center shrink-0">
+                        <button
+                          title={txt('Aufgabe in dieser Spalte anlegen')}
+                          onClick={() => {
+                            setTaskForm({ ...emptyTaskForm, folder_id: folder?.id ?? '' })
+                            setSubtaskParent(null)
+                            setError('')
+                            setTaskModalOpen(true)
+                          }}
+                          className="p-1.5 text-gray-400 hover:text-[#1a5276] hover:bg-gray-100 rounded-md transition-colors"
+                        >
+                          <Plus size={16} />
+                        </button>
+                        {folder && (
+                          <button
+                            title={txt('Spalte bearbeiten (Name, Farbe)')}
+                            onClick={() => oeffneOrdnerVerwaltung(folder)}
+                            className="p-1.5 text-gray-400 hover:text-[#1a5276] hover:bg-gray-100 rounded-md transition-colors"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2 p-2 min-h-16">
+                    {eintraege.length === 0
+                      ? <p className="text-xs text-gray-400 py-3 text-center">{istZiel ? txt('Hier ablegen') : txt('Keine offenen Aufgaben.')}</p>
+                      : eintraege.map(({ task, istKind }) => renderKarte(task, istKind, true))}
+                  </div>
+                </section>
+              )
+            })}
+            {/* Neue Spalte = neuer Ordner */}
+            {darfTasksBearbeiten && (
+              <button
+                type="button"
+                onClick={() => oeffneOrdnerVerwaltung()}
+                className="w-[60vw] sm:w-56 shrink-0 rounded-lg border border-dashed border-gray-300 text-sm text-gray-500 hover:text-[#1a5276] hover:border-[#1a5276] px-3 py-3 inline-flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <Plus size={15} /> {txt('Spalte hinzufügen')}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'offen' && sicht === 'ordner' && (
         <div className="flex flex-col gap-3">
           {offeneAnzahl === 0 && folders.length === 0 && (
             <p className="text-sm text-gray-500 py-8 text-center">{txt('Keine offenen Tasks.')}</p>
@@ -2582,7 +2705,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           Ordner gliedern die Aufgaben dieses Projekts. Jede Aufgabe kann einem
           Ordner zugewiesen werden und erscheint dann in dessen Gruppe;
           Unter-Tasks folgen automatisch dem Ordner ihres Mutter-Tasks.
-          In der Ordner-Liste lässt sich eine Aufgabe mit der Maus in einen anderen Ordner ziehen.
+          In der Ansicht «Board» ist jeder Ordner eine Spalte; in Liste und Board lässt sich eine Aufgabe mit der Maus in einen anderen Ordner ziehen.
           Löschen ist erst möglich, wenn keine offenen Aufgaben mehr im Ordner liegen.
         </p>
         {folderError && <p className="text-sm text-red-600 mb-3">{folderError}</p>}

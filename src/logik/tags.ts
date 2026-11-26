@@ -52,21 +52,22 @@ export const TAG_FARB_KLASSEN_AKTIV: Record<TagFarbe, string> = {
 }
 
 // Ordner tragen dieselbe Farbauswahl (sql/modul/16). Gefärbt werden
-// das Ordner-Symbol und der linke Rand der Gruppe — dezent genug,
+// das Ordner-Symbol und der linke Rand der Gruppe (im Board der obere
+// Rand der Spalte) — dezent genug,
 // dass die Tag-Chips auf den Aufgaben die lautere Auszeichnung bleiben.
-export const ORDNER_FARB_KLASSEN: Record<TagFarbe, { symbol: string; rand: string }> = {
-  grau: { symbol: 'text-gray-500', rand: 'border-l-gray-400' },
-  blau: { symbol: 'text-blue-600', rand: 'border-l-blue-500' },
-  gruen: { symbol: 'text-green-600', rand: 'border-l-green-500' },
-  gelb: { symbol: 'text-yellow-500', rand: 'border-l-yellow-400' },
-  orange: { symbol: 'text-orange-500', rand: 'border-l-orange-400' },
-  rot: { symbol: 'text-red-600', rand: 'border-l-red-500' },
-  violett: { symbol: 'text-purple-600', rand: 'border-l-purple-500' },
-  tuerkis: { symbol: 'text-teal-600', rand: 'border-l-teal-500' },
+export const ORDNER_FARB_KLASSEN: Record<TagFarbe, { symbol: string; rand: string; kopf: string }> = {
+  grau: { symbol: 'text-gray-500', rand: 'border-l-gray-400', kopf: 'border-t-gray-400' },
+  blau: { symbol: 'text-blue-600', rand: 'border-l-blue-500', kopf: 'border-t-blue-500' },
+  gruen: { symbol: 'text-green-600', rand: 'border-l-green-500', kopf: 'border-t-green-500' },
+  gelb: { symbol: 'text-yellow-500', rand: 'border-l-yellow-400', kopf: 'border-t-yellow-400' },
+  orange: { symbol: 'text-orange-500', rand: 'border-l-orange-400', kopf: 'border-t-orange-400' },
+  rot: { symbol: 'text-red-600', rand: 'border-l-red-500', kopf: 'border-t-red-500' },
+  violett: { symbol: 'text-purple-600', rand: 'border-l-purple-500', kopf: 'border-t-purple-500' },
+  tuerkis: { symbol: 'text-teal-600', rand: 'border-l-teal-500', kopf: 'border-t-teal-500' },
 }
 
 /** Klassen für einen Ordner; null, wenn er keine Farbe hat */
-export function ordnerFarbKlassen(farbe: string | null | undefined): { symbol: string; rand: string } | null {
+export function ordnerFarbKlassen(farbe: string | null | undefined): { symbol: string; rand: string; kopf: string } | null {
   return istTagFarbe(farbe) ? ORDNER_FARB_KLASSEN[farbe] : null
 }
 
