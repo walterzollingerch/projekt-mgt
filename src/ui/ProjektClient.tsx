@@ -510,6 +510,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     members.forEach(m => { if (m.profile) namen.set(m.profile_id, m.profile.full_name) })
     // Zuständige, die kein Mitglied mehr sind, tauchen trotzdem auf
     offen.forEach(t => { if (t.assignee) namen.set(t.assignee.id, t.assignee.full_name) })
+    const mitgliedIds = new Set(members.map(m => m.profile_id))
     const proPerson = new Map<string, TaskRow[]>()
     offen.forEach(t => {
       const key = t.assignee_id ?? ''
@@ -521,15 +522,17 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
       spalten.push({ id: userId, name: txt('Ich'), istIch: true, eintraege: eintraege(userId) })
     }
     Array.from(namen.entries())
-      .filter(([id]) => id !== userId && (proPerson.get(id)?.length ?? 0) > 0)
+      // Während eine Karte gezogen wird, stehen auch die Mitglieder ohne
+      // offene Aufgaben da — sonst liesse sich ihnen nichts übergeben
+      .filter(([id]) => id !== userId && ((proPerson.get(id)?.length ?? 0) > 0 || (!!ziehtTaskId && mitgliedIds.has(id))))
       .sort((a, b) => a[1].localeCompare(b[1]))
       .forEach(([id, name]) => spalten.push({ id, name, istIch: false, eintraege: eintraege(id) }))
-    if ((proPerson.get('')?.length ?? 0) > 0) {
+    if ((proPerson.get('')?.length ?? 0) > 0 || ziehtTaskId) {
       spalten.push({ id: '', name: txt('Nicht zugewiesen'), istIch: false, eintraege: eintraege('') })
     }
     return spalten
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, members, userId, istMitglied, nachTagFilter, boardSortierung, tags])
+  }, [tasks, members, userId, istMitglied, nachTagFilter, boardSortierung, tags, ziehtTaskId])
 
   // Das persönliche Projekt «Eigene Tasks»: keine Firma, genau ein
   // Mitglied, alles mir zugewiesen. Es wird nicht verwaltet — weder
@@ -939,6 +942,44 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     } catch {
       setze(vorher)
       setZiehFehler(txt('Die Aufgabe konnte nicht verschoben werden.'))
+    }
+  }
+
+  // Karte im Personen-Board in die Spalte einer anderen Person
+  // gezogen: die Zuständigkeit wechselt ('' = niemand). Das ist
+  // dieselbe Änderung wie im Aufgaben-Dialog und verschickt dieselben
+  // Mails — darum die Rückfrage, ein versehentliches Ablegen soll
+  // niemanden benachrichtigen.
+  const uebergebeAn = async (taskId: string, profileId: string, name: string) => {
+    const task = tasks.find(t => t.id === taskId)
+    if (!task || (task.assignee_id ?? '') === profileId) return
+    const frage = profileId === ''
+      ? txt('Zuständigkeit für «{0}» entfernen? Die bisher zuständige Person wird per E-Mail informiert.', task.titel)
+      : profileId === userId
+        ? txt('Aufgabe «{0}» selbst übernehmen? Die bisher zuständige Person wird per E-Mail informiert.', task.titel)
+        : txt('Aufgabe «{0}» an {1} übergeben? {1} und die bisher zuständige Person werden per E-Mail informiert.', task.titel, name)
+    if (!confirm(frage)) return
+    setZiehFehler('')
+    try {
+      const res = await fetch(`/api/aufgaben/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignee_id: profileId || null }),
+      })
+      const result = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setZiehFehler(result.error || txt('Die Aufgabe konnte nicht übergeben werden.'))
+        return
+      }
+      // Vertrauliche Aufgabe abgegeben, ohne sonst beteiligt zu sein
+      if (result.zugriffEntfallen) {
+        setTasks(prev => prev.filter(t => t.id !== taskId && t.parent_task_id !== taskId))
+        setMoveHinweis({ text: txt('Gespeichert. Die Aufgabe ist vertraulich und du bist nicht mehr beteiligt — sie ist für dich ab jetzt nicht mehr sichtbar.') })
+        return
+      }
+      setTasks(prev => prev.map(t => (t.id === taskId ? { ...result.task, notes: t.notes } : t)))
+    } catch {
+      setZiehFehler(txt('Die Aufgabe konnte nicht übergeben werden.'))
     }
   }
 
@@ -1481,11 +1522,32 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
     const ordner = task.folder_id ? folders.find(f => f.id === task.folder_id) : null
     const ueberfaellig = istUeberfaellig(task)
     const personVon = (t: TaskRow) => t.assignee_id === userId ? txt('Ich') : (t.assignee?.full_name ?? txt('Nicht zugewiesen'))
+    // Ziehen in die Spalte einer anderen Person wechselt die
+    // Zuständigkeit. Wie die Listenzeile ein <div role="button">,
+    // weil Firefox Schaltflächen nicht ziehen lässt.
+    const ziehbar = darfTasksBearbeiten && task.status === 'offen'
     return (
-      <button
+      <div
         key={task.id}
+        role="button"
+        tabIndex={0}
+        draggable={ziehbar}
+        onDragStart={ziehbar ? e => {
+          e.dataTransfer.setData('text/plain', task.id)
+          e.dataTransfer.effectAllowed = 'move'
+          // Verzögert — siehe renderTaskRow
+          setTimeout(() => setZiehtTaskId(task.id), 0)
+        } : undefined}
+        onDragEnd={ziehbar ? () => { setZiehtTaskId(null); setZielGruppe(null) } : undefined}
         onClick={() => openDetail(task)}
-        className={`text-left bg-white rounded-lg border border-gray-200 shadow-sm p-3 hover:border-[#1a5276] transition-colors flex flex-col gap-1.5 ${unterMutter ? 'ml-3 w-[calc(100%-0.75rem)] border-l-4 border-l-[#d4e6f1]' : 'w-full'}`}
+        onKeyDown={e => {
+          if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault()
+            openDetail(task)
+          }
+        }}
+        title={ziehbar ? txt('Öffnen — oder in die Spalte einer anderen Person ziehen') : undefined}
+        className={`text-left bg-white rounded-lg border border-gray-200 shadow-sm p-3 hover:border-[#1a5276] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1a5276] cursor-pointer transition-colors flex flex-col gap-1.5 ${ziehtTaskId === task.id ? 'opacity-50' : ''} ${unterMutter ? 'ml-3 w-[calc(100%-0.75rem)] border-l-4 border-l-[#d4e6f1]' : 'w-full'}`}
       >
         {mutter && !unterMutter && (
           <div className="flex items-center gap-1 text-[11px] text-gray-400 min-w-0">
@@ -1556,7 +1618,7 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
             ))}
           </div>
         )}
-      </button>
+      </div>
     )
   }
 
@@ -1731,6 +1793,14 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
         </div>
       )}
 
+      {/* Fehler beim Ziehen — in beiden Ansichten (Ordner, Personen) */}
+      {tab === 'offen' && ziehFehler && (
+        <p role="alert" className="mb-3 p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-700 flex items-center justify-between gap-3">
+          <span>{ziehFehler}</span>
+          <button type="button" onClick={() => setZiehFehler('')} title={txt('Schliessen')} className="shrink-0 p-1 hover:text-red-900"><X size={14} /></button>
+        </p>
+      )}
+
       {tab === 'offen' && ansicht === 'personen' && !istEigenesProjekt && (
         personenSpalten.every(s => s.eintraege.length === 0) ? (
           <p className="text-sm text-gray-500 py-8 text-center">
@@ -1743,8 +1813,31 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
           // und als «da kommt noch mehr» sichtbar ist.
           <div className="-mx-4 px-4 overflow-x-auto pb-2">
             <div className="flex items-start gap-3 sm:gap-4 min-w-max">
-              {personenSpalten.map(spalte => (
-                <section key={spalte.id || 'ohne'} className="w-[78vw] sm:w-72 shrink-0 rounded-lg border border-gray-200 bg-gray-50/70">
+              {personenSpalten.map(spalte => {
+                // Ablageziel: die Spalte einer ANDEREN Person, die Mitglied
+                // ist (nur Mitglieder können zuständig sein), oder «Nicht
+                // zugewiesen»
+                const zielKey = `person:${spalte.id}`
+                const gezogen = ziehtTaskId ? tasks.find(t => t.id === ziehtTaskId) : null
+                const istZiel = !!gezogen && (gezogen.assignee_id ?? '') !== spalte.id
+                  && (spalte.id === '' || members.some(m => m.profile_id === spalte.id))
+                return (
+                <section
+                  key={spalte.id || 'ohne'}
+                  onDragOver={istZiel ? e => {
+                    e.preventDefault()
+                    e.dataTransfer.dropEffect = 'move'
+                    if (zielGruppe !== zielKey) setZielGruppe(zielKey)
+                  } : undefined}
+                  onDrop={istZiel ? e => {
+                    e.preventDefault()
+                    const id = e.dataTransfer.getData('text/plain') || ziehtTaskId
+                    setZiehtTaskId(null)
+                    setZielGruppe(null)
+                    if (id) uebergebeAn(id, spalte.id, spalte.name)
+                  } : undefined}
+                  className={`w-[78vw] sm:w-72 shrink-0 rounded-lg border bg-gray-50/70 transition-shadow ${istZiel && zielGruppe === zielKey ? 'border-[#1a5276] ring-2 ring-[#1a5276]/40' : istZiel ? 'border-dashed border-[#1a5276]/60' : 'border-gray-200'}`}
+                >
                   <div className="flex items-center gap-2 px-3 py-2.5 border-b border-gray-200 bg-white rounded-t-lg">
                     <span className={`text-sm font-semibold truncate ${spalte.id ? 'text-gray-800' : 'text-gray-500'}`}>
                       {spalte.name}
@@ -1769,11 +1862,12 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
                   </div>
                   <div className="flex flex-col gap-2 p-2">
                     {spalte.eintraege.length === 0
-                      ? <p className="text-xs text-gray-400 py-3 text-center">{txt('Keine offenen Aufgaben.')}</p>
+                      ? <p className="text-xs text-gray-400 py-3 text-center">{istZiel ? txt('Hier ablegen') : txt('Keine offenen Aufgaben.')}</p>
                       : spalte.eintraege.map(({ task, unterMutter }) => renderKarte(task, unterMutter))}
                   </div>
                 </section>
-              ))}
+                )
+              })}
             </div>
           </div>
         )
@@ -1781,12 +1875,6 @@ export default function ProjektClient({ project: initialProject, initialTasks, i
 
       {tab === 'offen' && (ansicht === 'ordner' || istEigenesProjekt) && (
         <div className="flex flex-col gap-3">
-          {ziehFehler && (
-            <p role="alert" className="p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-700 flex items-center justify-between gap-3">
-              <span>{ziehFehler}</span>
-              <button type="button" onClick={() => setZiehFehler('')} title={txt('Schliessen')} className="shrink-0 p-1 hover:text-red-900"><X size={14} /></button>
-            </p>
-          )}
           {offeneAnzahl === 0 && folders.length === 0 && (
             <p className="text-sm text-gray-500 py-8 text-center">{txt('Keine offenen Tasks.')}</p>
           )}
